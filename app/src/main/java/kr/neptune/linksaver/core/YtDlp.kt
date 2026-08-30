@@ -233,6 +233,9 @@ object YtDlp {
                 applyApiVariant(api)
                 addOption("--dump-json")
                 addOption("--ignore-errors")
+                // 인스타 사진은 formats 가 비어 있어 기본값으로는 항목 자체가 사라진다.
+                // 이 옵션이 있어야 사진도 선택 목록에 나온다.
+                addOption("--ignore-no-formats-error")
             }
             val metas = try {
                 parseAll(YoutubeDL.getInstance().execute(request, processId, null).out)
@@ -252,7 +255,9 @@ object YtDlp {
     private fun parseMeta(json: JSONObject, position: Int): MediaMeta {
         val ext = json.optString("ext").ifBlank { null }
         val duration = json.optDouble("duration").let { if (it.isNaN() || it <= 0.0) null else it }
-        val isImage = (ext?.lowercase() ?: "") in setOf("jpg", "jpeg", "png", "webp", "heic")
+        val formatCount = json.optJSONArray("formats")?.length() ?: 0
+        val isImage = (ext?.lowercase() ?: "") in setOf("jpg", "jpeg", "png", "webp", "heic") ||
+            (duration == null && formatCount == 0)
 
         val title = json.optString("title").ifBlank {
             json.optString("description").take(60).ifBlank { "제목 없음" }
@@ -333,8 +338,52 @@ object YtDlp {
             if (files.isNotEmpty()) return@withContext files
         }
 
+        // 인스타 사진 게시물 대응.
+        // 추출기가 사진을 formats 가 아니라 thumbnails 에만 넣기 때문에
+        // 일반 경로로는 "No video formats found" 로 끝난다.
+        // 이 경우 썸네일(=원본 이미지)을 직접 파일로 저장한다.
+        val images = downloadImages(context, url, outDir, processId, playlistItems, template)
+        if (images.isNotEmpty()) return@withContext images
+
         if (failures.isNotEmpty()) throw combineFailures(failures)
         emptyList()
+    }
+
+    /** formats 가 없는 항목(사진)을 썸네일 경로로 저장한다 */
+    private fun downloadImages(
+        context: Context,
+        url: String,
+        outDir: File,
+        processId: String,
+        playlistItems: String?,
+        template: String
+    ): List<File> {
+        outDir.listFiles()?.forEach { it.delete() }
+
+        val request = YoutubeDLRequest(url).apply {
+            applyCommon(context)
+            addOption("-o", template)
+            if (!playlistItems.isNullOrBlank()) {
+                addOption("--playlist-items", playlistItems)
+            }
+            addOption("--ignore-no-formats-error")
+            addOption("--write-thumbnail")
+            addOption("--skip-download")
+            addOption("--newline")
+            addOption("--ignore-errors")
+        }
+
+        try {
+            YoutubeDL.getInstance().execute(request, processId, null)
+        } catch (t: Throwable) {
+            if (isCancellation(t)) throw t
+            Log.w(TAG, "이미지 저장 실패: " + t.message)
+        }
+
+        return outDir.listFiles()
+            ?.filter { it.isFile && it.length() > 0L && !it.name.endsWith(".part") }
+            ?.sortedBy { it.name }
+            .orEmpty()
     }
 
     fun cancel(processId: String): Boolean =

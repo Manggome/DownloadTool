@@ -16,15 +16,17 @@ object UrlUtil {
         "vxtwitter.com", "fxtwitter.com", "fixupx.com", "twittpr.com", "nitter.net"
     )
     private val TIKTOK_HOSTS = setOf(
-        "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"
+        "tiktok.com", "www.tiktok.com", "m.tiktok.com", "lite.tiktok.com",
+        "vm.tiktok.com", "vt.tiktok.com", "tiktokv.com", "www.tiktokv.com"
     )
+
+    /** 단축 형태는 yt-dlp 의 전용 추출기(TikTokVMIE)가 직접 처리한다 */
+    private val TIKTOK_SHORT_HOSTS = setOf("vm.tiktok.com", "vt.tiktok.com")
     private val YOUTUBE_HOSTS = setOf(
         "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"
     )
 
-    private val REDIRECT_HOSTS = setOf(
-        "t.co", "instagr.am", "bit.ly", "buff.ly", "vm.tiktok.com", "vt.tiktok.com"
-    )
+    private val REDIRECT_HOSTS = setOf("t.co", "instagr.am", "bit.ly", "buff.ly")
 
     /** 공유 인텐트로 들어온 텍스트에서 첫 번째 URL 을 뽑아냄 */
     fun extractFirstUrl(text: String?): String? {
@@ -111,6 +113,14 @@ object UrlUtil {
                 // /i/status/123, /user/status/123 형태만 유지
                 "https://x.com$path"
             }
+
+            // 단축링크는 건드리지 않는다. 앱이 풀어버리면 yt-dlp 가 인식 못 하는
+            // 형태(www 없는 호스트 등)로 떨어질 수 있다.
+            host in TIKTOK_SHORT_HOSTS -> url
+
+            // yt-dlp 의 틱톡 정규식은 www 서브도메인을 강제한다.
+            // tiktok.com / m.tiktok.com 그대로는 매칭되지 않는다.
+            host in TIKTOK_HOSTS -> "https://www.tiktok.com$path"
             else -> url
         }
     }

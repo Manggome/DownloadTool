@@ -1,0 +1,66 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      # KEYSTORE_B64 시크릿이 있으면 서명된 release, 없으면 debug 를 만든다
+      - name: Decode signing keystore
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          mkdir -p keystore
+          printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/release.jks
+          echo "서명 키를 복원했습니다."
+
+      - name: Build release APK (signed)
+        if: env.KEYSTORE_B64 != ''
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Build debug APK
+        if: env.KEYSTORE_B64 == ''
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: List outputs
+        run: find app/build/outputs/apk -name '*.apk' -printf '%p  %s bytes\n'
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: linksaver-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean up keystore
+        if: always()
+        run: rm -rf keystore

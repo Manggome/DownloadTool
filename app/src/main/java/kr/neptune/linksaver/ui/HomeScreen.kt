@@ -7,6 +7,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,7 +77,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -103,6 +107,7 @@ fun HomeScreen(vm: MainViewModel) {
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showSettings by remember { mutableStateOf(false) }
+    var detailsTask by remember { mutableStateOf<DownloadTask?>(null) }
 
     LaunchedEffect(toast) {
         toast?.let {
@@ -174,6 +179,7 @@ fun HomeScreen(vm: MainViewModel) {
                         onCancel = { vm.cancel(task.id) },
                         onRetry = { vm.retry(task.url, task.quality, task.playlistItems) },
                         onRemove = { vm.removeTask(task.id) },
+                        onDetails = { detailsTask = task },
                         onOpen = {
                             val uri = task.savedUris.firstOrNull() ?: return@TaskCard
                             val mime = context.contentResolver.getType(uri) ?: "*/*"
@@ -209,6 +215,10 @@ fun HomeScreen(vm: MainViewModel) {
         PickerState.Hidden -> Unit
     }
 
+    detailsTask?.let { task ->
+        ErrorDetailsDialog(task = task, onDismiss = { detailsTask = null })
+    }
+
     if (showSettings) {
         SettingsSheet(
             vm = vm,
@@ -240,13 +250,19 @@ private fun InitBanner(state: YtDlp.InitState) {
             }
             Column {
                 Text(
-                    if (failed) "엔진 초기화 실패" else "다운로드 엔진 준비 중…",
+                    when (state) {
+                        is YtDlp.InitState.Failed -> "엔진 초기화 실패"
+                        is YtDlp.InitState.Updating -> "엔진 최신화 중…"
+                        else -> "다운로드 엔진 준비 중…"
+                    },
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
                     when (state) {
                         is YtDlp.InitState.Failed -> state.message
+                        is YtDlp.InitState.Updating ->
+                            "yt-dlp 최신판을 받고 있습니다. 인스타/X 변경사항이 여기서 반영됩니다."
                         else -> "첫 실행에는 5~20초 정도 걸립니다"
                     },
                     style = MaterialTheme.typography.bodySmall
@@ -543,6 +559,48 @@ private fun MediaCell(meta: MediaMeta, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+// ---------------------------------------------------------------- 오류 상세
+
+/**
+ * yt-dlp 가 실제로 뱉은 오류 원문을 그대로 보여준다.
+ * 한국어 요약만으로는 원인을 알 수 없는 경우가 많아서 진단에 꼭 필요하다.
+ */
+@Composable
+private fun ErrorDetailsDialog(task: DownloadTask, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val body = buildString {
+        appendLine("요약: " + (task.error ?: "(없음)"))
+        appendLine("플랫폼: " + task.platform.label + " / 화질: " + task.quality.label)
+        appendLine("URL: " + task.url)
+        appendLine()
+        appendLine("--- 원문 ---")
+        append(task.rawError ?: "(원문이 기록되지 않았습니다)")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("오류 상세") },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    body,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(body))
+                onDismiss()
+            }) { Text("복사") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("닫기") }
+        }
+    )
+}
+
 // ---------------------------------------------------------------- 작업 카드
 
 @Composable
@@ -551,7 +609,8 @@ private fun TaskCard(
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onRemove: () -> Unit,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    onDetails: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -603,14 +662,18 @@ private fun TaskCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val failed = task.state == TaskState.FAILED
                 Text(
-                    text = task.error ?: statusText(task),
+                    text = if (failed) (task.error ?: "실패") + "  ▸ 자세히"
+                    else statusText(task),
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (task.error != null) MaterialTheme.colorScheme.error
+                    color = if (failed) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(if (failed) Modifier.clickable(onClick = onDetails) else Modifier)
                 )
 
                 Spacer(Modifier.width(8.dp))

@@ -113,7 +113,7 @@ class DownloadService : Service() {
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "task crashed", t)
-                fail(taskId, YtDlp.humanizeError(t.message))
+                fail(taskId, YtDlp.humanizeError(t.message), raw = rawOf(t))
             } finally {
                 if (running.decrementAndGet() == 0) {
                     ServiceCompat.stopForeground(
@@ -200,7 +200,17 @@ class DownloadService : Service() {
             }
 
             if (files.isEmpty()) {
-                fail(taskId, "받을 수 있는 파일이 없습니다. 비공개 게시물이거나 링크가 잘못됐을 수 있습니다.")
+                fail(
+                    taskId,
+                    "받을 수 있는 파일이 없습니다. 비공개 게시물이거나 링크가 잘못됐을 수 있습니다.",
+                    raw = buildString {
+                        appendLine("yt-dlp 가 파일을 하나도 만들지 않았습니다.")
+                        appendLine("url=" + url)
+                        appendLine("quality=" + quality.name)
+                        appendLine("items=" + (playlistItems ?: "(전체)"))
+                        appendLine("마지막 상태: " + (DownloadRepo.get(taskId)?.statusLine ?: ""))
+                    }
+                )
                 return
             }
 
@@ -243,19 +253,42 @@ class DownloadService : Service() {
                 }
             } else {
                 Log.e(TAG, "download failed", t)
-                fail(taskId, YtDlp.humanizeError(t.message))
+                fail(taskId, YtDlp.humanizeError(t.message), raw = rawOf(t))
             }
         } finally {
             runCatching { workDir.deleteRecursively() }
         }
     }
 
-    private fun fail(taskId: String, message: String) {
+    private fun fail(taskId: String, message: String, raw: String? = null) {
         DownloadRepo.update(taskId) {
-            it.copy(state = TaskState.FAILED, error = message, statusLine = "실패")
+            it.copy(
+                state = TaskState.FAILED,
+                error = message,
+                rawError = raw?.takeIf { s -> s.isNotBlank() },
+                statusLine = "실패"
+            )
         }
         Notifications.showResult(this, taskId.hashCode(), "다운로드 실패", message, success = false)
     }
+
+    /** 예외 사슬 전체를 진단용 문자열로 펼친다 (yt-dlp stderr 가 여기 담긴다) */
+    private fun rawOf(t: Throwable): String = buildString {
+        var cur: Throwable? = t
+        var depth = 0
+        while (depth < 5) {
+            val c = cur ?: break
+            if (depth > 0) {
+                appendLine()
+                appendLine("--- caused by ---")
+            }
+            append(c.javaClass.simpleName)
+            append(": ")
+            append(c.message ?: "(메시지 없음)")
+            cur = c.cause
+            depth++
+        }
+    }.take(4000)
 
     private fun cancelTask(taskId: String) {
         DownloadRepo.update(taskId) { it.copy(state = TaskState.CANCELED, statusLine = "취소 중…") }

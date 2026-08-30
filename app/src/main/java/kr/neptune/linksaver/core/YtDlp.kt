@@ -27,7 +27,13 @@ object YtDlp {
 
     sealed interface InitState {
         data object Idle : InitState
+
+        /** python / yt-dlp / ffmpeg 압축 해제 중 */
         data object Loading : InitState
+
+        /** 번들된 yt-dlp 가 오래됐을 때 최신판을 받는 중 */
+        data object Updating : InitState
+
         data object Ready : InitState
         data class Failed(val message: String) : InitState
     }
@@ -50,16 +56,51 @@ object YtDlp {
                     YoutubeDL.getInstance().init(context.applicationContext)
                     FFmpeg.getInstance().init(context.applicationContext)
                     initialized = true
-                    _initState.value = InitState.Ready
                 } catch (t: Throwable) {
                     Log.e(TAG, "init failed", t)
                     _initState.value = InitState.Failed(t.message ?: "알 수 없는 오류")
+                    return@withContext
                 }
+
+                // 앱에 번들된 yt-dlp 는 라이브러리 배포 시점 것이라 몇 달씩 뒤처진다.
+                // 인스타/X 는 내부 구조를 자주 바꾸므로, 최초 실행 시(및 주기적으로)
+                // 최신판을 받아둬야 갓 설치한 앱이 곧바로 실패하는 일을 막을 수 있다.
+                autoUpdateIfStale(context)
+                _initState.value = InitState.Ready
             }
         }
     }
 
     fun isReady(): Boolean = initialized
+
+    /**
+     * 번들 yt-dlp 가 오래됐으면 조용히 최신판을 받아둔다.
+     * 네트워크가 없거나 실패해도 앱은 그대로 진행한다 (번들 버전으로 동작).
+     */
+    private fun autoUpdateIfStale(context: Context) {
+        val prefs = Prefs.get(context)
+        if (!prefs.autoUpdateEngine) return
+
+        val now = System.currentTimeMillis()
+        val last = prefs.engineUpdatedAt
+        val stale = last == 0L || now - last > Prefs.ENGINE_UPDATE_INTERVAL_MS
+        if (!stale) return
+
+        // 오프라인 등으로 계속 실패할 때 앱 시작이 매번 느려지지 않도록 시도 간격을 둔다
+        if (now - prefs.engineUpdateAttemptAt < Prefs.ENGINE_RETRY_INTERVAL_MS) return
+        prefs.engineUpdateAttemptAt = now
+
+        _initState.value = InitState.Updating
+        try {
+            YoutubeDL.getInstance()
+                .updateYoutubeDL(context.applicationContext, YoutubeDL.UpdateChannel.STABLE)
+            prefs.engineUpdatedAt = System.currentTimeMillis()
+            Log.i(TAG, "engine auto-updated to ${YoutubeDL.getInstance().version(context)}")
+        } catch (t: Throwable) {
+            // 실패해도 치명적이지 않다. 다음 실행 때 다시 시도한다.
+            Log.w(TAG, "engine auto-update failed: ${t.message}")
+        }
+    }
 
     suspend fun version(context: Context): String? = withContext(Dispatchers.IO) {
         runCatching { YoutubeDL.getInstance().version(context.applicationContext) }.getOrNull()
@@ -71,6 +112,7 @@ object YtDlp {
         try {
             val status = YoutubeDL.getInstance()
                 .updateYoutubeDL(context.applicationContext, YoutubeDL.UpdateChannel.STABLE)
+            Prefs.get(context).engineUpdatedAt = System.currentTimeMillis()
             val v = version(context) ?: "?"
             when (status?.name) {
                 "DONE" -> "업데이트 완료 ($v)"

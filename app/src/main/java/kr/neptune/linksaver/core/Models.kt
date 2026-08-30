@@ -62,7 +62,10 @@ data class DownloadTask(
     val progress: Float = 0f,
     val etaSec: Long = -1,
     val statusLine: String = "",
+    /** 사용자에게 보여줄 한국어 요약 */
     val error: String? = null,
+    /** yt-dlp 가 실제로 뱉은 원문 (진단용, "자세히"에서 노출) */
+    val rawError: String? = null,
     val savedCount: Int = 0,
     val savedUris: List<Uri> = emptyList()
 ) {

@@ -14,6 +14,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * yt-dlp(파이썬 번들) 래퍼.
@@ -272,13 +274,28 @@ object YtDlp {
             id = json.optString("id"),
             title = title,
             uploader = uploader,
-            thumbnail = json.optString("thumbnail").ifBlank { null },
+            thumbnail = bestThumbnail(json),
             ext = ext,
             durationSec = duration,
             width = json.optInt("width", 0).takeIf { it > 0 },
             height = json.optInt("height", 0).takeIf { it > 0 },
             isImage = isImage
         )
+    }
+
+    /**
+     * 인스타 사진은 단일 thumbnail 필드가 없고 thumbnails 배열에만 들어온다.
+     * yt-dlp 는 이 배열을 낮은 화질 -> 높은 화질 순으로 담으므로 마지막이 원본에 가장 가깝다.
+     */
+    private fun bestThumbnail(json: JSONObject): String? {
+        json.optString("thumbnail").takeIf { it.startsWith("http") }?.let { return it }
+
+        val arr = json.optJSONArray("thumbnails") ?: return null
+        for (i in arr.length() - 1 downTo 0) {
+            val u = arr.optJSONObject(i)?.optString("url").orEmpty()
+            if (u.startsWith("http")) return u
+        }
+        return null
     }
 
     // ---------------------------------------------------------------- 다운로드
@@ -342,48 +359,94 @@ object YtDlp {
         // 추출기가 사진을 formats 가 아니라 thumbnails 에만 넣기 때문에
         // 일반 경로로는 "No video formats found" 로 끝난다.
         // 이 경우 썸네일(=원본 이미지)을 직접 파일로 저장한다.
-        val images = downloadImages(context, url, outDir, processId, playlistItems, template)
+        val images = downloadImages(context, url, outDir, playlistItems)
         if (images.isNotEmpty()) return@withContext images
 
         if (failures.isNotEmpty()) throw combineFailures(failures)
         emptyList()
     }
 
-    /** formats 가 없는 항목(사진)을 썸네일 경로로 저장한다 */
-    private fun downloadImages(
+    /**
+     * 사진 게시물 대응.
+     * 추출기가 사진을 formats 에 넣지 않으므로 yt-dlp 로는 받을 수 없다.
+     * 대신 조회 결과의 이미지 URL 을 직접 내려받는다.
+     */
+    private suspend fun downloadImages(
         context: Context,
         url: String,
         outDir: File,
-        processId: String,
-        playlistItems: String?,
-        template: String
+        playlistItems: String?
     ): List<File> {
-        outDir.listFiles()?.forEach { it.delete() }
+        val metas = runCatching { probe(context, url, null) }.getOrDefault(emptyList())
+        val wanted = parseItemFilter(playlistItems)
 
-        val request = YoutubeDLRequest(url).apply {
-            applyCommon(context)
-            addOption("-o", template)
-            if (!playlistItems.isNullOrBlank()) {
-                addOption("--playlist-items", playlistItems)
-            }
-            addOption("--ignore-no-formats-error")
-            addOption("--write-thumbnail")
-            addOption("--skip-download")
-            addOption("--newline")
-            addOption("--ignore-errors")
+        val targets = metas.filter { meta ->
+            meta.isImage &&
+                !meta.thumbnail.isNullOrBlank() &&
+                (wanted == null || meta.playlistIndex in wanted)
+        }
+        if (targets.isEmpty()) {
+            Log.w(TAG, "이미지 후보가 없습니다 (metas=" + metas.size + ")")
+            return emptyList()
         }
 
-        try {
-            YoutubeDL.getInstance().execute(request, processId, null)
-        } catch (t: Throwable) {
-            if (isCancellation(t)) throw t
-            Log.w(TAG, "이미지 저장 실패: " + t.message)
+        outDir.listFiles()?.forEach { it.delete() }
+
+        targets.forEachIndexed { index, meta ->
+            val source = meta.thumbnail ?: return@forEachIndexed
+            val ext = extensionOf(source)
+            val name = "%03d_%s.%s".format(index + 1, meta.id.ifBlank { "image" }, ext)
+            val ok = fetchTo(source, File(outDir, name))
+            Log.i(TAG, "이미지 " + name + " -> " + ok)
         }
 
         return outDir.listFiles()
-            ?.filter { it.isFile && it.length() > 0L && !it.name.endsWith(".part") }
+            ?.filter { it.isFile && it.length() > 0L }
             ?.sortedBy { it.name }
             .orEmpty()
+    }
+
+    /** "1,3,7" 형식을 정수 집합으로. null 이면 전체 */
+    private fun parseItemFilter(playlistItems: String?): Set<Int>? {
+        if (playlistItems.isNullOrBlank()) return null
+        return playlistItems.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
+            .takeIf { it.isNotEmpty() }
+    }
+
+    private fun extensionOf(source: String): String {
+        val path = runCatching { URL(source).path }.getOrDefault("")
+        val ext = path.substringAfterLast('.', "").lowercase()
+        return if (ext in setOf("jpg", "jpeg", "png", "webp", "heic")) ext else "jpg"
+    }
+
+    /** 인스타 CDN 은 Referer 를 확인하므로 함께 보낸다 */
+    private fun fetchTo(source: String, target: File): Boolean {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(source).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15000
+                readTimeout = 30000
+                instanceFollowRedirects = true
+                setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36"
+                )
+                setRequestProperty("Referer", "https://www.instagram.com/")
+            }
+            if (conn.responseCode !in 200..299) {
+                Log.w(TAG, "이미지 응답 " + conn.responseCode)
+                return false
+            }
+            conn.inputStream.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            target.length() > 0L
+        } catch (t: Throwable) {
+            Log.w(TAG, "이미지 내려받기 실패: " + t.message)
+            false
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
     }
 
     fun cancel(processId: String): Boolean =

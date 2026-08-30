@@ -46,8 +46,6 @@ jobs:
           echo "--- java ---";   java -version
           echo "--- gradle ---"; gradle --version
           echo "--- sdk ---";    echo "ANDROID_HOME=$ANDROID_HOME"; ls "$ANDROID_HOME" || true
-          echo "--- settings.gradle.kts ---"; cat settings.gradle.kts
-          echo "--- gradle.properties ---";   cat gradle.properties
 
       # KEYSTORE_B64 시크릿이 있으면 서명된 release, 없으면 debug 를 만든다
       - name: Decode signing keystore
@@ -59,11 +57,60 @@ jobs:
 
       - name: Build release APK (signed)
         if: env.KEYSTORE_B64 != ''
-        run: gradle :app:assembleRelease --no-daemon --no-build-cache --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/gradle.log
 
       - name: Build debug APK
         if: env.KEYSTORE_B64 == ''
-        run: gradle :app:assembleDebug --no-daemon --no-build-cache --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/gradle.log
+
+      # 실패했을 때 원인만 뽑아 로그 맨 아래와 실행 요약 페이지에 붙인다.
+      # (긴 스택트레이스를 뒤질 필요 없이 바로 보인다)
+      - name: 실패 원인 요약
+        if: failure()
+        run: |
+          if [ ! -f /tmp/gradle.log ]; then
+            echo "Gradle 로그가 없습니다 — 빌드 이전 단계에서 실패했습니다."
+            exit 0
+          fi
+
+          extract() {
+            echo "### Kotlin / Java 컴파일 에러"
+            grep -E "^(e|w): " /tmp/gradle.log | head -40 || true
+            echo
+            echo "### What went wrong"
+            sed -n '/^FAILURE: Build failed/,/^\* Try:/p' /tmp/gradle.log | head -60 || true
+            echo
+            echo "### Caused by"
+            grep -E "Caused by:" /tmp/gradle.log | head -20 || true
+            echo
+            echo "### 로그 마지막 60줄 (스택트레이스 제외)"
+            grep -vE "^\s+at " /tmp/gradle.log | tail -60 || true
+          }
+
+          echo "=================== 실패 원인 요약 ==================="
+          extract
+          echo "====================================================="
+
+          {
+            echo '## ❌ 빌드 실패 원인'
+            echo ''
+            echo '```'
+            extract
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-log
+          path: /tmp/gradle.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: List outputs
         run: find app/build/outputs/apk -name '*.apk' -printf '%p  %s bytes\n'

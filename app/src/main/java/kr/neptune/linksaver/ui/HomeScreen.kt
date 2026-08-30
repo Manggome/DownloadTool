@@ -85,6 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import kr.neptune.linksaver.core.CookieExport
 import kr.neptune.linksaver.core.DownloadRepo
 import kr.neptune.linksaver.core.DownloadTask
 import kr.neptune.linksaver.core.MediaImporter
@@ -782,6 +783,11 @@ private fun SettingsSheet(
     val version by vm.ytdlpVersion.collectAsStateWithLifecycle()
     val updating by vm.updating.collectAsStateWithLifecycle()
     val cookies by vm.cookiesName.collectAsStateWithLifecycle()
+    val loggedIn by vm.loggedInSites.collectAsStateWithLifecycle()
+
+    val loginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { vm.refreshLoginState() }
     var autoPaste by remember { mutableStateOf(vm.autoPaste) }
 
     val cookiePicker = rememberLauncherForActivityResult(
@@ -816,9 +822,38 @@ private fun SettingsSheet(
 
             HorizontalDivider()
 
+            Text("로그인", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+
+            CookieExport.ALL.forEach { site ->
+                val on = site.key in loggedIn
+                SettingRow(
+                    title = site.label,
+                    subtitle = if (on) "로그인됨" else "로그인 안 됨"
+                ) {
+                    if (on) {
+                        TextButton(onClick = { vm.logout(site) }) { Text("해제") }
+                    } else {
+                        TextButton(onClick = {
+                            loginLauncher.launch(LoginActivity.intent(context, site.key))
+                        }) { Text("로그인") }
+                    }
+                }
+            }
+
+            Text(
+                "로그인하면 X 연령제한 게시물, 인스타 스토리처럼 로그아웃 상태에서는 서버가 아예 " +
+                    "내용을 주지 않는 것들까지 받을 수 있고, 인스타 요청 차단도 크게 줄어듭니다. " +
+                    "비밀번호는 앱이 저장하지 않고 각 서비스 공식 페이지에 직접 입력합니다. " +
+                    "자동화 도구로 세션을 쓰는 것은 약관 위반이라 차단 위험이 있으니 별도 계정을 권장합니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            HorizontalDivider()
+
             SettingRow(
-                title = "cookies.txt (선택)",
-                subtitle = cookies ?: "미등록 — 인스타 실패가 잦으면 등록하세요"
+                title = "cookies.txt 직접 등록 (고급)",
+                subtitle = cookies ?: "미등록 — 보통은 위 로그인으로 충분합니다"
             ) {
                 if (cookies != null) {
                     TextButton(onClick = vm::clearCookies) { Text("해제") }
@@ -829,7 +864,8 @@ private fun SettingsSheet(
                 }
             }
             Text(
-                "브라우저 확장(Get cookies.txt 등)으로 내보낸 파일을 넣으면 인스타그램 요청 차단을 크게 줄일 수 있습니다. 본인 계정 정보이므로 다른 곳에 공유하지 마세요.",
+                "PC 브라우저 확장(Get cookies.txt 등)으로 내보낸 파일을 직접 넣는 방식입니다. " +
+                    "위 로그인이 막히거나 이미 쿠키 파일이 있을 때만 쓰세요. 본인 계정 정보이므로 외부에 공유하지 마세요.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

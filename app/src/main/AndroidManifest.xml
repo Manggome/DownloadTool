@@ -53,6 +53,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.LoginActivity"
+            android:exported="false"
+            android:label="로그인"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.LinkSaver" />
+
         <service
             android:name=".core.DownloadService"
             android:exported="false"

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kr.neptune.linksaver.core.CookieExport
 import kr.neptune.linksaver.core.DownloadRepo
 import kr.neptune.linksaver.core.DownloadService
 import kr.neptune.linksaver.core.MediaMeta
@@ -65,6 +66,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val _cookiesName = MutableStateFlow(cookiesLabel())
     val cookiesName: StateFlow<String?> = _cookiesName.asStateFlow()
+
+    /** 로그인이 저장된 사이트 key 집합 */
+    private val _loggedInSites = MutableStateFlow(currentLoggedInSites())
+    val loggedInSites: StateFlow<Set<String>> = _loggedInSites.asStateFlow()
 
     val autoPaste: Boolean get() = prefs.autoPasteFromClipboard
 
@@ -268,6 +273,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             _updating.value = false
             _toast.value = result
         }
+    }
+
+    private fun currentLoggedInSites(): Set<String> =
+        CookieExport.ALL.filter { CookieExport.isSaved(app, it) }.map { it.key }.toSet()
+
+    /** 로그인 화면에서 돌아왔을 때 호출 */
+    fun refreshLoginState() {
+        _loggedInSites.value = currentLoggedInSites()
+        _cookiesName.value = cookiesLabel()
+    }
+
+    fun logout(site: CookieExport.Site) {
+        CookieExport.clear(app, site)
+        refreshLoginState()
+        _toast.value = site.label + " 로그아웃했습니다"
     }
 
     fun setAutoPaste(enabled: Boolean) {

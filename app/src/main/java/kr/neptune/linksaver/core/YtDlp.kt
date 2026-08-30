@@ -163,6 +163,38 @@ object YtDlp {
         return this
     }
 
+    /**
+     * X 는 기본 graphql 경로로 막히는 게시물이 있다(민감 콘텐츠, 게스트 토큰 제한 등).
+     * yt-dlp 가 legacy / syndication 경로를 제공하므로 순서대로 재시도한다.
+     * 로그인(쿠키) 상태면 효과가 없으므로 그때는 한 번만 시도한다.
+     */
+    private fun apiVariants(context: Context, url: String): List<String?> {
+        val cookies = Prefs.get(context).cookiesPath
+        val hasCookies = cookies != null && File(cookies).exists()
+        return if (!hasCookies && UrlUtil.platformOf(url) == Platform.TWITTER) {
+            listOf(null, "syndication", "legacy")
+        } else {
+            listOf(null)
+        }
+    }
+
+    private fun YoutubeDLRequest.applyApiVariant(api: String?): YoutubeDLRequest {
+        if (api != null) addOption("--extractor-args", "twitter:api=" + api)
+        return this
+    }
+
+    /** 사용자가 취소한 경우는 재시도하지 않고 그대로 올려보낸다 */
+    private fun isCancellation(t: Throwable): Boolean =
+        t is InterruptedException || t.javaClass.simpleName.contains("Canceled", true)
+
+    private fun parseAll(out: String): List<MediaMeta> =
+        out.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("{") && it.endsWith("}") }
+            .mapNotNull { line -> runCatching { JSONObject(line) }.getOrNull() }
+            .mapIndexed { position, json -> parseMeta(json, position) }
+            .toList()
+
     // ---------------------------------------------------------------- 메타데이터
 
     /**
@@ -175,19 +207,28 @@ object YtDlp {
         processId: String? = null
     ): List<MediaMeta> = withContext(Dispatchers.IO) {
         ensureInit(context)
-        val request = YoutubeDLRequest(url).apply {
-            applyCommon(context)
-            addOption("--dump-json")
-            addOption("--ignore-errors")
+        var lastError: Throwable? = null
+
+        for (api in apiVariants(context, url)) {
+            val request = YoutubeDLRequest(url).apply {
+                applyCommon(context)
+                applyApiVariant(api)
+                addOption("--dump-json")
+                addOption("--ignore-errors")
+            }
+            val metas = try {
+                parseAll(YoutubeDL.getInstance().execute(request, processId, null).out)
+            } catch (t: Throwable) {
+                if (isCancellation(t)) throw t
+                Log.w(TAG, "probe 실패 (api=" + api + "): " + t.message)
+                lastError = t
+                emptyList()
+            }
+            if (metas.isNotEmpty()) return@withContext metas
         }
-        val response = YoutubeDL.getInstance().execute(request, processId, null)
-        response.out
-            .lineSequence()
-            .map { it.trim() }
-            .filter { it.startsWith("{") && it.endsWith("}") }
-            .mapNotNull { line -> runCatching { JSONObject(line) }.getOrNull() }
-            .mapIndexed { position, json -> parseMeta(json, position) }
-            .toList()
+
+        lastError?.let { throw it }
+        emptyList()
     }
 
     private fun parseMeta(json: JSONObject, position: Int): MediaMeta {
@@ -237,26 +278,44 @@ object YtDlp {
         outDir.mkdirs()
 
         val template = File(outDir, "%(autonumber)03d_%(id)s.%(ext)s").absolutePath
-        val request = YoutubeDLRequest(url).apply {
-            applyCommon(context)
-            applyQuality(quality)
-            addOption("-o", template)
-            if (!playlistItems.isNullOrBlank()) {
-                addOption("--playlist-items", playlistItems)
+        var lastError: Throwable? = null
+
+        for (api in apiVariants(context, url)) {
+            // 재시도 전에 직전 시도의 잔여물을 지운다
+            outDir.listFiles()?.forEach { it.delete() }
+
+            val request = YoutubeDLRequest(url).apply {
+                applyCommon(context)
+                applyQuality(quality)
+                applyApiVariant(api)
+                addOption("-o", template)
+                if (!playlistItems.isNullOrBlank()) {
+                    addOption("--playlist-items", playlistItems)
+                }
+                addOption("--newline")
+                addOption("--no-part")
+                addOption("--ignore-errors")
             }
-            addOption("--newline")
-            addOption("--no-part")
-            addOption("--ignore-errors")
+
+            try {
+                YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
+                    onProgress(progress, eta, line)
+                }
+            } catch (t: Throwable) {
+                if (isCancellation(t)) throw t
+                Log.w(TAG, "download 실패 (api=" + api + "): " + t.message)
+                lastError = t
+            }
+
+            val files = outDir.listFiles()
+                ?.filter { it.isFile && it.length() > 0L && !it.name.endsWith(".part") }
+                ?.sortedBy { it.name }
+                .orEmpty()
+            if (files.isNotEmpty()) return@withContext files
         }
 
-        YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
-            onProgress(progress, eta, line)
-        }
-
-        outDir.listFiles()
-            ?.filter { it.isFile && it.length() > 0L && !it.name.endsWith(".part") }
-            ?.sortedBy { it.name }
-            ?: emptyList()
+        lastError?.let { throw it }
+        emptyList()
     }
 
     fun cancel(processId: String): Boolean =

@@ -45,6 +45,16 @@ object YtDlp {
 
     private val initMutex = Mutex()
 
+    // 링크 하나를 받는 동안 조회가 여러 번 일어난다(화면 -> 서비스 -> 이미지 경로).
+    // 인스타는 요청 수에 민감해 뒤쪽 조회가 빈 응답을 받는 일이 잦으므로 짧게 캐시한다.
+    private const val PROBE_CACHE_TTL_MS = 5L * 60 * 1000
+
+    @Volatile
+    private var probeCache: Pair<String, List<MediaMeta>>? = null
+
+    @Volatile
+    private var probeCacheAt = 0L
+
     @Volatile
     private var initialized = false
 
@@ -247,11 +257,23 @@ object YtDlp {
                 failures += label to (t.message ?: t.javaClass.simpleName)
                 emptyList()
             }
-            if (metas.isNotEmpty()) return@withContext metas
+            if (metas.isNotEmpty()) {
+                probeCache = url to metas
+                probeCacheAt = System.currentTimeMillis()
+                return@withContext metas
+            }
         }
 
         if (failures.isNotEmpty()) throw combineFailures(failures)
         emptyList()
+    }
+
+    /** 같은 링크를 짧은 시간 안에 다시 조회할 때 재요청을 피한다 */
+    private fun cachedProbe(url: String): List<MediaMeta>? {
+        val cache = probeCache ?: return null
+        if (cache.first != url) return null
+        if (System.currentTimeMillis() - probeCacheAt > PROBE_CACHE_TTL_MS) return null
+        return cache.second
     }
 
     private fun parseMeta(json: JSONObject, position: Int): MediaMeta {
@@ -359,9 +381,11 @@ object YtDlp {
         // 추출기가 사진을 formats 가 아니라 thumbnails 에만 넣기 때문에
         // 일반 경로로는 "No video formats found" 로 끝난다.
         // 이 경우 썸네일(=원본 이미지)을 직접 파일로 저장한다.
-        val images = downloadImages(context, url, outDir, playlistItems)
+        val diag = mutableListOf<String>()
+        val images = downloadImages(context, url, outDir, playlistItems, diag)
         if (images.isNotEmpty()) return@withContext images
 
+        if (diag.isNotEmpty()) failures += "이미지 경로" to diag.joinToString(separator = " / ")
         if (failures.isNotEmpty()) throw combineFailures(failures)
         emptyList()
     }
@@ -375,30 +399,48 @@ object YtDlp {
         context: Context,
         url: String,
         outDir: File,
-        playlistItems: String?
+        playlistItems: String?,
+        diag: MutableList<String>
     ): List<File> {
-        val metas = runCatching { probe(context, url, null) }.getOrDefault(emptyList())
-        val wanted = parseItemFilter(playlistItems)
+        val cached = cachedProbe(url)
+        val metas = cached ?: runCatching { probe(context, url, null) }
+            .onFailure { diag += "재조회 실패: " + (it.message ?: it.javaClass.simpleName) }
+            .getOrDefault(emptyList())
 
+        diag += "항목 " + metas.size + "개 (" + (if (cached != null) "캐시" else "재조회") + ")"
+
+        val wanted = parseItemFilter(playlistItems)
         val targets = metas.filter { meta ->
             meta.isImage &&
                 !meta.thumbnail.isNullOrBlank() &&
                 (wanted == null || meta.playlistIndex in wanted)
         }
+
+        diag += "이미지 후보 " + targets.size + "개 / 선택 " + (playlistItems ?: "전체")
         if (targets.isEmpty()) {
-            Log.w(TAG, "이미지 후보가 없습니다 (metas=" + metas.size + ")")
+            val why = metas.joinToString(", ") { m ->
+                "#" + m.playlistIndex + (if (m.isImage) " img" else " vid") +
+                    (if (m.thumbnail.isNullOrBlank()) " no-url" else " url-ok")
+            }
+            if (why.isNotBlank()) diag += "항목 상태: " + why
             return emptyList()
         }
 
         outDir.listFiles()?.forEach { it.delete() }
 
+        var failed = 0
         targets.forEachIndexed { index, meta ->
             val source = meta.thumbnail ?: return@forEachIndexed
-            val ext = extensionOf(source)
-            val name = "%03d_%s.%s".format(index + 1, meta.id.ifBlank { "image" }, ext)
-            val ok = fetchTo(source, File(outDir, name))
-            Log.i(TAG, "이미지 " + name + " -> " + ok)
+            val name = "%03d_%s.%s".format(
+                index + 1, meta.id.ifBlank { "image" }, extensionOf(source)
+            )
+            val code = fetchTo(source, File(outDir, name))
+            if (code != 200) {
+                failed++
+                diag += name + " 실패 (HTTP " + code + ")"
+            }
         }
+        if (failed > 0) diag += "이미지 " + failed + "/" + targets.size + "개 실패"
 
         return outDir.listFiles()
             ?.filter { it.isFile && it.length() > 0L }
@@ -419,8 +461,11 @@ object YtDlp {
         return if (ext in setOf("jpg", "jpeg", "png", "webp", "heic")) ext else "jpg"
     }
 
-    /** 인스타 CDN 은 Referer 를 확인하므로 함께 보낸다 */
-    private fun fetchTo(source: String, target: File): Boolean {
+    /**
+     * 인스타 CDN 은 Referer 를 확인하므로 함께 보낸다.
+     * @return HTTP 상태 코드. 성공은 200, 예외는 -1
+     */
+    private fun fetchTo(source: String, target: File): Int {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(source).openConnection() as HttpURLConnection).apply {
@@ -433,17 +478,18 @@ object YtDlp {
                 )
                 setRequestProperty("Referer", "https://www.instagram.com/")
             }
-            if (conn.responseCode !in 200..299) {
-                Log.w(TAG, "이미지 응답 " + conn.responseCode)
-                return false
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                Log.w(TAG, "이미지 응답 " + code)
+                return code
             }
             conn.inputStream.use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
-            target.length() > 0L
+            if (target.length() > 0L) 200 else -1
         } catch (t: Throwable) {
             Log.w(TAG, "이미지 내려받기 실패: " + t.message)
-            false
+            -1
         } finally {
             runCatching { conn?.disconnect() }
         }

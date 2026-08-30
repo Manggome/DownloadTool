@@ -18,10 +18,8 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        // youtubedl-android 는 아래 ABI 만 지원
-        ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
-        }
+        // ABI 제한은 아래 splits.abi 한 곳에서만 한다.
+        // AGP 8.x 는 ndk.abiFilters 와 splits.abi 를 동시에 쓰면 설정 충돌로 실패한다.
     }
 
     signingConfigs {

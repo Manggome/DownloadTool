@@ -13,6 +13,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # 실패 로그를 ci-logs 브랜치에 발행하기 위해 필요
+    permissions:
+      contents: write
+
     env:
       KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
       KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -67,41 +71,59 @@ jobs:
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/gradle.log
 
-      # 실패했을 때 원인만 뽑아 로그 맨 아래와 실행 요약 페이지에 붙인다.
-      # (긴 스택트레이스를 뒤질 필요 없이 바로 보인다)
-      - name: 실패 원인 요약
+      # 실패 시: 원인만 뽑아 (1) 로그 하단 (2) 실행 요약 (3) ci-logs 브랜치 에 발행.
+      # (3) 덕분에 비인증 상태에서도 raw.githubusercontent.com 으로 원인을 읽을 수 있다.
+      - name: 실패 원인 발행
         if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ ! -f /tmp/gradle.log ]; then
-            echo "Gradle 로그가 없습니다 — 빌드 이전 단계에서 실패했습니다."
+            echo "Gradle 로그 없음 — 빌드 이전 단계에서 실패했습니다."
             exit 0
           fi
 
-          extract() {
-            echo "### Kotlin / Java 컴파일 에러"
-            grep -E "^(e|w): " /tmp/gradle.log | head -40 || true
+          SUM=/tmp/failure-summary.txt
+          {
+            echo "commit : $GITHUB_SHA"
+            echo "run    : $GITHUB_RUN_ID"
             echo
-            echo "### What went wrong"
-            sed -n '/^FAILURE: Build failed/,/^\* Try:/p' /tmp/gradle.log | head -60 || true
+            echo "=========== Kotlin / Java 컴파일 에러 ==========="
+            grep -E "^(e|w): " /tmp/gradle.log | head -60 || true
             echo
-            echo "### Caused by"
+            echo "=========== What went wrong ==========="
+            sed -n '/^FAILURE: Build failed/,/^\* Try:/p' /tmp/gradle.log | head -80 || true
+            echo
+            echo "=========== Caused by ==========="
             grep -E "Caused by:" /tmp/gradle.log | head -20 || true
             echo
-            echo "### 로그 마지막 60줄 (스택트레이스 제외)"
-            grep -vE "^\s+at " /tmp/gradle.log | tail -60 || true
-          }
+            echo "=========== 마지막 80줄 (스택트레이스 제외) ==========="
+            grep -vE "^[[:space:]]+at " /tmp/gradle.log | tail -80 || true
+          } > "$SUM"
 
-          echo "=================== 실패 원인 요약 ==================="
-          extract
-          echo "====================================================="
+          echo "=================== 실패 원인 ==================="
+          cat "$SUM"
+          echo "================================================"
 
           {
             echo '## ❌ 빌드 실패 원인'
             echo ''
             echo '```'
-            extract
+            cat "$SUM"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # ci-logs 브랜치에 강제 발행 (orphan 브랜치, 매번 덮어씀)
+          rm -rf /tmp/pub && mkdir -p /tmp/pub && cd /tmp/pub
+          git init -q
+          git checkout -q -b ci-logs
+          cp "$SUM" last-failure.txt
+          cp /tmp/gradle.log gradle-full.log
+          git add -A
+          git -c user.name='github-actions' -c user.email='actions@github.com' \
+              commit -q -m "ci: 빌드 실패 로그 ($GITHUB_SHA)"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs
+          echo "발행 완료: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/ci-logs/last-failure.txt"
 
       - name: Upload build log
         if: failure()

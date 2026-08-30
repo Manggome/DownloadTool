@@ -2,10 +2,12 @@ package kr.neptune.linksaver.core
 
 import android.net.Uri
 
-enum class Platform(val label: String) {
-    INSTAGRAM("Instagram"),
-    TWITTER("X (Twitter)"),
-    OTHER("기타")
+enum class Platform(val label: String, val short: String) {
+    INSTAGRAM("Instagram", "IG"),
+    TWITTER("X (Twitter)", "X"),
+    TIKTOK("TikTok", "TT"),
+    YOUTUBE("YouTube", "YT"),
+    OTHER("기타", "WEB")
 }
 
 /** 화질/형식 프리셋 */

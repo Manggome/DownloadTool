@@ -15,7 +15,16 @@ object UrlUtil {
         "x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
         "vxtwitter.com", "fxtwitter.com", "fixupx.com", "twittpr.com", "nitter.net"
     )
-    private val REDIRECT_HOSTS = setOf("t.co", "instagr.am", "bit.ly", "buff.ly")
+    private val TIKTOK_HOSTS = setOf(
+        "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"
+    )
+    private val YOUTUBE_HOSTS = setOf(
+        "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"
+    )
+
+    private val REDIRECT_HOSTS = setOf(
+        "t.co", "instagr.am", "bit.ly", "buff.ly", "vm.tiktok.com", "vt.tiktok.com"
+    )
 
     /** 공유 인텐트로 들어온 텍스트에서 첫 번째 URL 을 뽑아냄 */
     fun extractFirstUrl(text: String?): String? {
@@ -32,11 +41,22 @@ object UrlUtil {
         return when {
             host in INSTAGRAM_HOSTS -> Platform.INSTAGRAM
             host in TWITTER_HOSTS -> Platform.TWITTER
+            host in TIKTOK_HOSTS -> Platform.TIKTOK
+            host in YOUTUBE_HOSTS -> Platform.YOUTUBE
             else -> Platform.OTHER
         }
     }
 
-    fun isSupported(url: String): Boolean = platformOf(url) != Platform.OTHER
+    /** 배지 표시용 — 앱이 이름을 아는 플랫폼인지 */
+    fun isKnownPlatform(url: String): Boolean = platformOf(url) != Platform.OTHER
+
+    /**
+     * 다운로드를 시도해 볼 만한 링크인지.
+     * 어떤 사이트를 실제로 받을 수 있는지는 yt-dlp 의 추출기 목록이 결정하므로,
+     * 앱은 형식만 확인하고 판단은 엔진에 맡긴다.
+     */
+    fun isSupported(url: String): Boolean =
+        url.startsWith("http://", true) || url.startsWith("https://", true)
 
     /** 리다이렉트가 필요한 단축/공유 링크인지 */
     fun needsRedirectResolve(url: String): Boolean {

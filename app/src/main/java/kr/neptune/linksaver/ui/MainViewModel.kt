@@ -142,11 +142,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             _toast.value = "http 로 시작하는 링크를 넣어 주세요"
             return
         }
-        if (!UrlUtil.isSupported(found) && !UrlUtil.needsRedirectResolve(found)) {
-            _toast.value = "인스타그램 또는 X(트위터) 링크만 지원합니다"
-            return
-        }
-
         val processId = "probe-${UUID.randomUUID()}"
         probeProcessId = processId
 

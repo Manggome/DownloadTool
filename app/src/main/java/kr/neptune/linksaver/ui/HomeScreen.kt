@@ -296,8 +296,8 @@ private fun InputCard(
                 value = url,
                 onValueChange = onUrlChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("인스타그램 · X(트위터) 링크") },
-                placeholder = { Text("https://www.instagram.com/p/…") },
+                label = { Text("동영상 · 이미지 링크") },
+                placeholder = { Text("https://…  링크를 붙여넣으세요") },
                 singleLine = false,
                 maxLines = 3,
                 trailingIcon = {
@@ -354,12 +354,14 @@ private fun EmptyHint() {
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text("이렇게 쓰세요", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text("1. 인스타 게시물 · 릴스 또는 X 게시물에서 [공유] → [링크세이버]", style = MaterialTheme.typography.bodySmall)
+            Text("1. 앱에서 [공유] → [링크세이버] 를 고르면 바로 시작됩니다", style = MaterialTheme.typography.bodySmall)
             Text("2. 또는 링크를 복사한 뒤 위의 [붙여넣기] → [다운로드]", style = MaterialTheme.typography.bodySmall)
             Text("3. 사진이 여러 장이면 받을 것만 골라서 저장할 수 있습니다", style = MaterialTheme.typography.bodySmall)
+            Text("4. 인스타·X·틱톡을 비롯해 엔진이 아는 사이트면 그대로 시도합니다", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(4.dp))
             Text(
-                "공개 계정의 게시물만 받을 수 있습니다. 저장 위치: ${MediaImporter.savedLocationText()}",
+                "받을 수 있는 사이트는 내장된 yt-dlp 엔진이 결정합니다. 지원하지 않는 곳은 실패로 표시됩니다. " +
+                    "저장 위치: ${MediaImporter.savedLocationText()}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -736,22 +738,24 @@ private fun Thumbnail(task: DownloadTask) {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        if (task.platform != Platform.OTHER) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .background(
-                        if (task.platform == Platform.INSTAGRAM) Color(0xFFE1306C) else Color(0xFF111111),
-                        RoundedCornerShape(topStart = 8.dp)
-                    )
-                    .padding(horizontal = 4.dp, vertical = 1.dp)
-            ) {
-                Text(
-                    if (task.platform == Platform.INSTAGRAM) "IG" else "X",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White
-                )
-            }
+        val badgeColor = when (task.platform) {
+            Platform.INSTAGRAM -> Color(0xFFE1306C)
+            Platform.TWITTER -> Color(0xFF111111)
+            Platform.TIKTOK -> Color(0xFF00F2EA)
+            Platform.YOUTUBE -> Color(0xFFFF0000)
+            Platform.OTHER -> Color(0xFF4A4A4A)
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .background(badgeColor, RoundedCornerShape(topStart = 8.dp))
+                .padding(horizontal = 4.dp, vertical = 1.dp)
+        ) {
+            Text(
+                task.platform.short,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (task.platform == Platform.TIKTOK) Color.Black else Color.White
+            )
         }
     }
 }

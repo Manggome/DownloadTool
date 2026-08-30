@@ -7,6 +7,5 @@ build/
 captures/
 .externalNativeBuild
 .cxx
-keystore/
-*.jks
+keystore/release.jks
 *.keystore

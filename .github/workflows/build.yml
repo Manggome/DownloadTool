@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # 실패 로그를 ci-logs 브랜치에 발행하기 위해 필요
+    # 고정 debug 키 커밋 + 릴리스 발행 + 실패 로그 발행에 필요
     permissions:
       contents: write
 
@@ -22,6 +22,7 @@ jobs:
       KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
       KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
       KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      IS_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
     steps:
       - name: Checkout
@@ -36,8 +37,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # gradle/actions/setup-gradle 는 settings 단계에 init script 를 주입하므로
-      # 원인 분리를 위해 Gradle 을 직접 설치해서 쓴다.
       - name: Install Gradle
         run: |
           curl -sSLo /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
@@ -45,19 +44,44 @@ jobs:
           unzip -q /tmp/gradle.zip -d "$HOME/gradle-dist"
           echo "$HOME/gradle-dist/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
 
+      # 빌드마다 서명 키가 바뀌면 기존 앱을 지워야만 설치된다.
+      # 키를 저장소에 한 번 만들어 고정해두면 덮어쓰기 업데이트가 된다.
+      - name: Ensure fixed debug keystore
+        run: |
+          if [ -f keystore/debug.jks ]; then
+            echo "고정 debug 키 존재 — 그대로 사용합니다."
+            exit 0
+          fi
+          echo "고정 debug 키가 없어 새로 만듭니다."
+          mkdir -p keystore
+          keytool -genkeypair -v \
+            -keystore keystore/debug.jks \
+            -storetype PKCS12 \
+            -alias linksaver \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass linksaver -keypass linksaver \
+            -dname "CN=LinkSaver Debug, OU=Personal, O=Personal, L=Seoul, C=KR"
+
+          if [ "$IS_MAIN" = "true" ]; then
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add keystore/debug.jks
+            git commit -q -m "ci: 고정 debug 서명 키 생성 [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "키를 저장소에 커밋했습니다. 이후 빌드부터 덮어쓰기 설치가 됩니다."
+          fi
+
       - name: Environment check
         run: |
           echo "--- java ---";   java -version
           echo "--- gradle ---"; gradle --version
-          echo "--- sdk ---";    echo "ANDROID_HOME=$ANDROID_HOME"; ls "$ANDROID_HOME" || true
+          echo "--- sdk ---";    echo "ANDROID_HOME=$ANDROID_HOME"
 
-      # KEYSTORE_B64 시크릿이 있으면 서명된 release, 없으면 debug 를 만든다
       - name: Decode signing keystore
         if: env.KEYSTORE_B64 != ''
         run: |
           mkdir -p keystore
           printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/release.jks
-          echo "서명 키를 복원했습니다."
 
       - name: Build release APK (signed)
         if: env.KEYSTORE_B64 != ''
@@ -71,8 +95,54 @@ jobs:
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/gradle.log
 
-      # 실패 시: 원인만 뽑아 (1) 로그 하단 (2) 실행 요약 (3) ci-logs 브랜치 에 발행.
-      # (3) 덕분에 비인증 상태에서도 raw.githubusercontent.com 으로 원인을 읽을 수 있다.
+      # 사용자가 폰에서 바로 받을 수 있도록 알아보기 쉬운 이름으로 정리한다.
+      # arm64-v8a 가 사실상 모든 최신 폰의 ABI 이므로 이것을 기본 파일로 삼는다.
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          find app/build/outputs/apk -name '*arm64-v8a*.apk'   -exec cp {} dist/LinkSaver.apk \;
+          find app/build/outputs/apk -name '*armeabi-v7a*.apk' -exec cp {} dist/LinkSaver-armeabi-v7a.apk \;
+          find app/build/outputs/apk -name '*x86_64*.apk'      -exec cp {} dist/LinkSaver-x86_64.apk \;
+          ls -lh dist
+          test -f dist/LinkSaver.apk
+
+      # latest 태그를 갱신해 항상 같은 주소로 받을 수 있게 한다:
+      # https://github.com/<repo>/releases/latest/download/LinkSaver.apk
+      - name: Publish release
+        if: env.IS_MAIN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES=$(printf '%s\n' \
+            "폰에서 아래 파일을 눌러 바로 설치하세요." \
+            "" \
+            "- **LinkSaver.apk** — 대부분의 폰 (arm64-v8a)" \
+            "- LinkSaver-armeabi-v7a.apk — 오래된 32비트 폰" \
+            "- LinkSaver-x86_64.apk — 에뮬레이터" \
+            "" \
+            "커밋: ${GITHUB_SHA}")
+
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest \
+            --title "링크세이버 최신 빌드" \
+            --notes "$NOTES" \
+            dist/LinkSaver.apk \
+            dist/LinkSaver-armeabi-v7a.apk \
+            dist/LinkSaver-x86_64.apk
+
+          echo "## 설치 링크" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/LinkSaver.apk" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APKs (백업용 아티팩트)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linksaver-apk
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # 실패 시: 원인만 뽑아 로그 하단 / 실행 요약 / ci-logs 브랜치 에 발행
       - name: 실패 원인 발행
         if: failure()
         env:
@@ -113,7 +183,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # ci-logs 브랜치에 강제 발행 (orphan 브랜치, 매번 덮어씀)
           rm -rf /tmp/pub && mkdir -p /tmp/pub && cd /tmp/pub
           git init -q
           git checkout -q -b ci-logs
@@ -123,28 +192,7 @@ jobs:
           git -c user.name='github-actions' -c user.email='actions@github.com' \
               commit -q -m "ci: 빌드 실패 로그 ($GITHUB_SHA)"
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs
-          echo "발행 완료: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/ci-logs/last-failure.txt"
 
-      - name: Upload build log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gradle-log
-          path: /tmp/gradle.log
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: List outputs
-        run: find app/build/outputs/apk -name '*.apk' -printf '%p  %s bytes\n'
-
-      - name: Upload APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: linksaver-apk
-          path: app/build/outputs/apk/**/*.apk
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Clean up keystore
+      - name: Clean up release keystore
         if: always()
-        run: rm -rf keystore
+        run: rm -f keystore/release.jks

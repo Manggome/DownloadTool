@@ -7,6 +7,11 @@ plugins {
 // keystore/release.jks 가 있으면 릴리스 서명, 없으면 debug 빌드만 사용
 val releaseKeystore = rootProject.file("keystore/release.jks")
 
+// 저장소에 고정해 둔 debug 서명 키.
+// 빌드마다 키가 바뀌면 기존 앱을 지워야만 설치되므로, 키를 고정해 덮어쓰기 업데이트가 되게 한다.
+// debug 키는 관례상 비밀이 아니며(release 키는 위 시크릿 경로를 쓴다) CI 가 없으면 자동 생성한다.
+val debugKeystore = rootProject.file("keystore/debug.jks")
+
 android {
     namespace = "kr.neptune.linksaver"
     compileSdk = 35
@@ -23,6 +28,14 @@ android {
     }
 
     signingConfigs {
+        if (debugKeystore.exists()) {
+            create("fixedDebug") {
+                storeFile = debugKeystore
+                storePassword = "linksaver"
+                keyAlias = "linksaver"
+                keyPassword = "linksaver"
+            }
+        }
         if (releaseKeystore.exists()) {
             create("release") {
                 storeFile = releaseKeystore
@@ -45,6 +58,9 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            if (debugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("fixedDebug")
+            }
         }
     }
 

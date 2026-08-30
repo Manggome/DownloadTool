@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  GRADLE_VERSION: '8.11.1'
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,10 +32,22 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.11.1'
+      # gradle/actions/setup-gradle 는 settings 단계에 init script 를 주입하므로
+      # 원인 분리를 위해 Gradle 을 직접 설치해서 쓴다.
+      - name: Install Gradle
+        run: |
+          curl -sSLo /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+          mkdir -p "$HOME/gradle-dist"
+          unzip -q /tmp/gradle.zip -d "$HOME/gradle-dist"
+          echo "$HOME/gradle-dist/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Environment check
+        run: |
+          echo "--- java ---";   java -version
+          echo "--- gradle ---"; gradle --version
+          echo "--- sdk ---";    echo "ANDROID_HOME=$ANDROID_HOME"; ls "$ANDROID_HOME" || true
+          echo "--- settings.gradle.kts ---"; cat settings.gradle.kts
+          echo "--- gradle.properties ---";   cat gradle.properties
 
       # KEYSTORE_B64 시크릿이 있으면 서명된 release, 없으면 debug 를 만든다
       - name: Decode signing keystore
@@ -44,11 +59,11 @@ jobs:
 
       - name: Build release APK (signed)
         if: env.KEYSTORE_B64 != ''
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
+        run: gradle :app:assembleRelease --no-daemon --no-build-cache --stacktrace
 
       - name: Build debug APK
         if: env.KEYSTORE_B64 == ''
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        run: gradle :app:assembleDebug --no-daemon --no-build-cache --stacktrace
 
       - name: List outputs
         run: find app/build/outputs/apk -name '*.apk' -printf '%p  %s bytes\n'

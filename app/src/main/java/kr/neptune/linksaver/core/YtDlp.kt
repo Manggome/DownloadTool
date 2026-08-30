@@ -176,22 +176,48 @@ object YtDlp {
     }
 
     /**
-     * X 는 기본 graphql 경로로 막히는 게시물이 있다(민감 콘텐츠, 게스트 토큰 제한 등).
-     * yt-dlp 가 legacy / syndication 경로를 제공하므로 순서대로 재시도한다.
-     * 로그인(쿠키) 상태면 효과가 없으므로 그때는 한 번만 시도한다.
+     * 플랫폼별 추출 경로 폴백 목록. 앞에서부터 시도하고 성공하면 멈춘다.
+     * 기본 경로가 막히는 게시물이 플랫폼마다 있어서, 엔진이 제공하는
+     * 대체 경로를 순서대로 시도한다.
      */
-    private fun apiVariants(context: Context, url: String): List<String?> {
-        val cookies = Prefs.get(context).cookiesPath
+    private fun apiVariants(context: Context, url: String): List<Pair<String, String?>> {
+        val prefs = Prefs.get(context)
+        val cookies = prefs.cookiesPath
         val hasCookies = cookies != null && File(cookies).exists()
-        return if (!hasCookies && UrlUtil.platformOf(url) == Platform.TWITTER) {
-            listOf(null, "syndication", "legacy")
-        } else {
-            listOf(null)
+
+        return when (UrlUtil.platformOf(url)) {
+            Platform.TWITTER ->
+                if (hasCookies) listOf("기본" to null)
+                else listOf(
+                    "기본" to null,
+                    "syndication" to "twitter:api=syndication",
+                    "legacy" to "twitter:api=legacy"
+                )
+
+            // 틱톡 기본 경로는 웹페이지를 긁는데 403 을 자주 받는다.
+            // device_id 를 주면 모바일 API 경로가 열리고, 지역에 맞는 앱 이름과
+            // API 호스트를 지정하면 성공률이 크게 오른다.
+            // (추출기 주석: KR/PH/TW/TH/VN = trill, 그 외 = musical_ly)
+            Platform.TIKTOK -> {
+                val device = prefs.tiktokDeviceId()
+                listOf(
+                    "기본" to null,
+                    "모바일API(trill/싱가포르)" to
+                        "tiktok:device_id=" + device +
+                        ";api_hostname=api22-normal-c-alisg.tiktokv.com" +
+                        ";app_name=trill;aid=1180",
+                    "모바일API(musical_ly/미국)" to
+                        "tiktok:device_id=" + device +
+                        ";api_hostname=api16-normal-c-useast1a.tiktokv.com"
+                )
+            }
+
+            else -> listOf("기본" to null)
         }
     }
 
-    private fun YoutubeDLRequest.applyApiVariant(api: String?): YoutubeDLRequest {
-        if (api != null) addOption("--extractor-args", "twitter:api=" + api)
+    private fun YoutubeDLRequest.applyApiVariant(args: String?): YoutubeDLRequest {
+        if (args != null) addOption("--extractor-args", args)
         return this
     }
 
@@ -211,7 +237,7 @@ object YtDlp {
             appendLine("추출 경로 " + failures.size + "개를 모두 시도했지만 실패했습니다.")
             failures.forEach { entry ->
                 appendLine()
-                appendLine("[api=" + entry.first + "]")
+                appendLine("[" + entry.first + "]")
                 append(entry.second.trim())
             }
         })
@@ -238,11 +264,10 @@ object YtDlp {
         ensureInit(context)
         val failures = mutableListOf<Pair<String, String>>()
 
-        for (api in apiVariants(context, url)) {
-            val label = api ?: "graphql"
+        for ((label, args) in apiVariants(context, url)) {
             val request = YoutubeDLRequest(url).apply {
                 applyCommon(context)
-                applyApiVariant(api)
+                applyApiVariant(args)
                 addOption("--dump-json")
                 addOption("--ignore-errors")
                 // 인스타 사진은 formats 가 비어 있어 기본값으로는 항목 자체가 사라진다.
@@ -342,15 +367,14 @@ object YtDlp {
         val template = File(outDir, "%(autonumber)03d_%(id)s.%(ext)s").absolutePath
         val failures = mutableListOf<Pair<String, String>>()
 
-        for (api in apiVariants(context, url)) {
-            val label = api ?: "graphql"
+        for ((label, args) in apiVariants(context, url)) {
             // 재시도 전에 직전 시도의 잔여물을 지운다
             outDir.listFiles()?.forEach { it.delete() }
 
             val request = YoutubeDLRequest(url).apply {
                 applyCommon(context)
                 applyQuality(quality)
-                applyApiVariant(api)
+                applyApiVariant(args)
                 addOption("-o", template)
                 if (!playlistItems.isNullOrBlank()) {
                     addOption("--playlist-items", playlistItems)

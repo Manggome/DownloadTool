@@ -29,6 +29,20 @@ class Prefs(context: Context) {
         get() = sp.getLong("engine_update_attempt_at", 0L)
         set(value) = sp.edit().putLong("engine_update_attempt_at", value).apply()
 
+    /**
+     * 틱톡 모바일 API 를 쓰려면 기기 ID 가 필요하다.
+     * 매번 바뀌면 수상해 보이므로 설치 단위로 한 번만 만들어 재사용한다.
+     */
+    fun tiktokDeviceId(): String {
+        sp.getString("tiktok_device_id", null)?.let { return it }
+        val generated = buildString {
+            append((1..9).random())
+            repeat(18) { append((0..9).random()) }
+        }
+        sp.edit().putString("tiktok_device_id", generated).apply()
+        return generated
+    }
+
     /** 자동 최신화 사용 여부 */
     var autoUpdateEngine: Boolean
         get() = sp.getBoolean("auto_update_engine", true)

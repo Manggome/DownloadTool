@@ -187,6 +187,23 @@ object YtDlp {
     private fun isCancellation(t: Throwable): Boolean =
         t is InterruptedException || t.javaClass.simpleName.contains("Canceled", true)
 
+    /** 모든 추출 경로가 실패했을 때, 경로별 원인을 한데 모아 올려보낸다 */
+    class AllAttemptsFailedException(message: String) : Exception(message)
+
+    /**
+     * 폴백 루프에서 마지막 오류만 남기면, 사실상 폐기된 legacy 경로의 404 가
+     * 진짜 원인(graphql 쪽 메시지)을 덮어버린다. 그래서 전부 합쳐서 보여준다.
+     */
+    private fun combineFailures(failures: List<Pair<String, String>>): Exception =
+        AllAttemptsFailedException(buildString {
+            appendLine("추출 경로 " + failures.size + "개를 모두 시도했지만 실패했습니다.")
+            failures.forEach { entry ->
+                appendLine()
+                appendLine("[api=" + entry.first + "]")
+                append(entry.second.trim())
+            }
+        })
+
     private fun parseAll(out: String): List<MediaMeta> =
         out.lineSequence()
             .map { it.trim() }
@@ -207,9 +224,10 @@ object YtDlp {
         processId: String? = null
     ): List<MediaMeta> = withContext(Dispatchers.IO) {
         ensureInit(context)
-        var lastError: Throwable? = null
+        val failures = mutableListOf<Pair<String, String>>()
 
         for (api in apiVariants(context, url)) {
+            val label = api ?: "graphql"
             val request = YoutubeDLRequest(url).apply {
                 applyCommon(context)
                 applyApiVariant(api)
@@ -220,14 +238,14 @@ object YtDlp {
                 parseAll(YoutubeDL.getInstance().execute(request, processId, null).out)
             } catch (t: Throwable) {
                 if (isCancellation(t)) throw t
-                Log.w(TAG, "probe 실패 (api=" + api + "): " + t.message)
-                lastError = t
+                Log.w(TAG, "probe 실패 (api=" + label + "): " + t.message)
+                failures += label to (t.message ?: t.javaClass.simpleName)
                 emptyList()
             }
             if (metas.isNotEmpty()) return@withContext metas
         }
 
-        lastError?.let { throw it }
+        if (failures.isNotEmpty()) throw combineFailures(failures)
         emptyList()
     }
 
@@ -278,9 +296,10 @@ object YtDlp {
         outDir.mkdirs()
 
         val template = File(outDir, "%(autonumber)03d_%(id)s.%(ext)s").absolutePath
-        var lastError: Throwable? = null
+        val failures = mutableListOf<Pair<String, String>>()
 
         for (api in apiVariants(context, url)) {
+            val label = api ?: "graphql"
             // 재시도 전에 직전 시도의 잔여물을 지운다
             outDir.listFiles()?.forEach { it.delete() }
 
@@ -303,8 +322,8 @@ object YtDlp {
                 }
             } catch (t: Throwable) {
                 if (isCancellation(t)) throw t
-                Log.w(TAG, "download 실패 (api=" + api + "): " + t.message)
-                lastError = t
+                Log.w(TAG, "download 실패 (api=" + label + "): " + t.message)
+                failures += label to (t.message ?: t.javaClass.simpleName)
             }
 
             val files = outDir.listFiles()
@@ -314,7 +333,7 @@ object YtDlp {
             if (files.isNotEmpty()) return@withContext files
         }
 
-        lastError?.let { throw it }
+        if (failures.isNotEmpty()) throw combineFailures(failures)
         emptyList()
     }
 

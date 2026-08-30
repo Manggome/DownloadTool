@@ -139,7 +139,9 @@ object YtDlp {
     // ---------------------------------------------------------------- 공통 옵션
 
     private fun YoutubeDLRequest.applyCommon(context: Context): YoutubeDLRequest {
-        addOption("--no-warnings")
+        // --no-warnings 를 켜면 안 된다.
+        // 틱톡은 모바일 API 실패를 경고로 처리한 뒤 웹페이지로 넘어가므로,
+        // 경고를 숨기면 진짜 실패 사유가 사라지고 폴백의 403 만 보인다.
         addOption("--no-mtime")
         addOption("--socket-timeout", "30")
         addOption("--retries", "3")
@@ -238,7 +240,7 @@ object YtDlp {
             failures.forEach { entry ->
                 appendLine()
                 appendLine("[" + entry.first + "]")
-                append(entry.second.trim())
+                append(entry.second.trim().take(900))
             }
         })
 

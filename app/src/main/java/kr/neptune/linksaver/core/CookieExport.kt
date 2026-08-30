@@ -48,7 +48,16 @@ object CookieExport {
         sessionCookie = "sessionid"
     )
 
-    val ALL = listOf(X, INSTAGRAM)
+    val TIKTOK = Site(
+        key = "tiktok",
+        label = "TikTok",
+        loginUrl = "https://www.tiktok.com/login",
+        cookieUrl = "https://www.tiktok.com",
+        domain = ".tiktok.com",
+        sessionCookie = "sessionid"
+    )
+
+    val ALL = listOf(X, INSTAGRAM, TIKTOK)
 
     fun byKey(key: String?): Site = ALL.firstOrNull { it.key == key } ?: X
 

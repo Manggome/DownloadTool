@@ -85,6 +85,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import java.io.File
+import kr.neptune.linksaver.core.AppUpdater
 import kr.neptune.linksaver.core.CookieExport
 import kr.neptune.linksaver.core.DownloadRepo
 import kr.neptune.linksaver.core.DownloadTask
@@ -105,6 +107,7 @@ fun HomeScreen(vm: MainViewModel) {
     val picker by vm.picker.collectAsStateWithLifecycle()
     val tasks by DownloadRepo.tasks.collectAsStateWithLifecycle()
     val initState by YtDlp.initState.collectAsStateWithLifecycle()
+    val updateState by vm.updateState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showSettings by remember { mutableStateOf(false) }
@@ -141,6 +144,15 @@ fun HomeScreen(vm: MainViewModel) {
                 AnimatedVisibility(visible = initState !is YtDlp.InitState.Ready) {
                     InitBanner(initState)
                 }
+            }
+
+            item {
+                UpdateBanner(
+                    state = updateState,
+                    onDownload = vm::downloadAppUpdate,
+                    onInstall = { apk -> vm.installAppUpdate(context, apk) },
+                    onDismiss = vm::dismissAppUpdate
+                )
             }
 
             item {
@@ -268,6 +280,91 @@ private fun InitBanner(state: YtDlp.InitState) {
                     },
                     style = MaterialTheme.typography.bodySmall
                 )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 업데이트 배너
+
+@Composable
+private fun UpdateBanner(
+    state: AppUpdater.State,
+    onDownload: () -> Unit,
+    onInstall: (File) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val show = state is AppUpdater.State.Available ||
+        state is AppUpdater.State.Downloading ||
+        state is AppUpdater.State.ReadyToInstall
+
+    AnimatedVisibility(visible = show) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                when (state) {
+                    is AppUpdater.State.Available -> {
+                        Text(
+                            "새 버전 " + state.release.versionName + " 이 있습니다",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (state.release.notes.isNotBlank()) {
+                            Text(
+                                state.release.notes,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = onDownload, modifier = Modifier.weight(1f)) {
+                                Text("받기")
+                            }
+                            TextButton(onClick = onDismiss) { Text("나중에") }
+                        }
+                    }
+
+                    is AppUpdater.State.Downloading -> {
+                        Text(
+                            "새 버전 받는 중 " + state.percent + "%",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        LinearProgressIndicator(
+                            progress = { state.percent / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    is AppUpdater.State.ReadyToInstall -> {
+                        Text(
+                            "설치할 준비가 됐습니다",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "설치 화면이 뜨면 그대로 진행하세요. 기존 앱을 지울 필요는 없습니다.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { onInstall(state.file) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("설치") }
+                            TextButton(onClick = onDismiss) { Text("나중에") }
+                        }
+                    }
+
+                    else -> Unit
+                }
             }
         }
     }
@@ -788,11 +885,13 @@ private fun SettingsSheet(
     val updating by vm.updating.collectAsStateWithLifecycle()
     val cookies by vm.cookiesName.collectAsStateWithLifecycle()
     val loggedIn by vm.loggedInSites.collectAsStateWithLifecycle()
+    val updateState by vm.updateState.collectAsStateWithLifecycle()
 
     val loginLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { vm.refreshLoginState() }
     var autoPaste by remember { mutableStateOf(vm.autoPaste) }
+    var igAnonFirst by remember { mutableStateOf(vm.instagramAnonymousFirst) }
 
     val cookiePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -802,11 +901,40 @@ private fun SettingsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text("설정", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+
+            SettingRow(
+                title = "앱 업데이트",
+                subtitle = when (val u = updateState) {
+                    is AppUpdater.State.Checking -> "확인 중…"
+                    is AppUpdater.State.UpToDate -> "최신입니다 (" + vm.appVersionName + ")"
+                    is AppUpdater.State.Available -> "새 버전 " + u.release.versionName + " 있음"
+                    is AppUpdater.State.Downloading -> "받는 중 " + u.percent + "%"
+                    is AppUpdater.State.ReadyToInstall -> "설치 준비됨"
+                    is AppUpdater.State.Failed -> "확인 실패: " + u.message
+                    else -> "현재 " + vm.appVersionName
+                }
+            ) {
+                when (val u = updateState) {
+                    is AppUpdater.State.Available ->
+                        TextButton(onClick = vm::downloadAppUpdate) { Text("받기") }
+
+                    is AppUpdater.State.ReadyToInstall ->
+                        TextButton(onClick = { vm.installAppUpdate(context, u.file) }) { Text("설치") }
+
+                    is AppUpdater.State.Checking, is AppUpdater.State.Downloading ->
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+
+                    else -> TextButton(onClick = vm::checkAppUpdate) { Text("확인") }
+                }
+            }
+
+            HorizontalDivider()
 
             SettingRow(
                 title = "yt-dlp 엔진",
@@ -849,6 +977,25 @@ private fun SettingsSheet(
                     "내용을 주지 않는 것들까지 받을 수 있고, 인스타 요청 차단도 크게 줄어듭니다. " +
                     "비밀번호는 앱이 저장하지 않고 각 서비스 공식 페이지에 직접 입력합니다. " +
                     "자동화 도구로 세션을 쓰는 것은 약관 위반이라 차단 위험이 있으니 별도 계정을 권장합니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            SettingRow(
+                title = "인스타는 익명으로 먼저 시도",
+                subtitle = "로그인 세션 사용을 최소화합니다"
+            ) {
+                Switch(
+                    checked = igAnonFirst,
+                    onCheckedChange = {
+                        igAnonFirst = it
+                        vm.setInstagramAnonymousFirst(it)
+                    }
+                )
+            }
+            Text(
+                "인스타는 세션을 쓸 때마다 계정에 흔적이 남고 \"의심스러운 로그인\" 경고가 올 수 있습니다. " +
+                    "켜두면 익명으로 되는 게시물은 익명으로 받고, 안 되는 것(스토리 등)만 로그인으로 넘어갑니다.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

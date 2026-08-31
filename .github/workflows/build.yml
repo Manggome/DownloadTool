@@ -54,13 +54,7 @@ jobs:
           fi
           echo "고정 debug 키가 없어 새로 만듭니다."
           mkdir -p keystore
-          keytool -genkeypair -v \
-            -keystore keystore/debug.jks \
-            -storetype PKCS12 \
-            -alias linksaver \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass linksaver -keypass linksaver \
-            -dname "CN=LinkSaver Debug, OU=Personal, O=Personal, L=Seoul, C=KR"
+          keytool -genkeypair -v -keystore keystore/debug.jks -storetype PKCS12 -alias linksaver -keyalg RSA -keysize 2048 -validity 10000 -storepass linksaver -keypass linksaver -dname "CN=LinkSaver Debug, OU=Personal, O=Personal, L=Seoul, C=KR"
 
           if [ "$IS_MAIN" = "true" ]; then
             git config user.name "github-actions"
@@ -73,9 +67,14 @@ jobs:
 
       - name: Environment check
         run: |
-          echo "--- java ---";   java -version
-          echo "--- gradle ---"; gradle --version
-          echo "--- sdk ---";    echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "--- java ---"
+          java -version
+          echo "--- gradle ---"
+          gradle --version
+          echo "--- sdk ---"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "--- version ---"
+          echo "versionCode=$((1 + GITHUB_RUN_NUMBER)) versionName=1.0.${GITHUB_RUN_NUMBER}"
 
       - name: Decode signing keystore
         if: env.KEYSTORE_B64 != ''
@@ -95,7 +94,7 @@ jobs:
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/gradle.log
 
-      # 사용자가 폰에서 바로 받을 수 있도록 알아보기 쉬운 이름으로 정리한다.
+      # 폰에서 바로 받을 수 있도록 알아보기 쉬운 이름으로 정리한다.
       # arm64-v8a 가 사실상 모든 최신 폰의 ABI 이므로 이것을 기본 파일로 삼는다.
       - name: Collect APKs
         run: |
@@ -103,6 +102,23 @@ jobs:
           find app/build/outputs/apk -name '*arm64-v8a*.apk'   -exec cp {} dist/LinkSaver.apk \;
           find app/build/outputs/apk -name '*armeabi-v7a*.apk' -exec cp {} dist/LinkSaver-armeabi-v7a.apk \;
           find app/build/outputs/apk -name '*x86_64*.apk'      -exec cp {} dist/LinkSaver-x86_64.apk \;
+
+          # 앱이 자기 버전과 비교해 스스로 업데이트할 수 있도록 버전 정보를 함께 올린다
+          python3 - > dist/latest.json <<'PYJSON'
+          import json, os, subprocess
+          run = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+          notes = subprocess.run(
+              ["git", "log", "-1", "--pretty=%s"], capture_output=True, text=True
+          ).stdout.strip()
+          print(json.dumps({
+              "versionCode": 1 + run,
+              "versionName": "1.0." + str(run),
+              "sha": os.environ.get("GITHUB_SHA", ""),
+              "notes": notes,
+          }, ensure_ascii=False, indent=2))
+          PYJSON
+
+          cat dist/latest.json
           ls -lh dist
           test -f dist/LinkSaver.apk
 
@@ -113,22 +129,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          NOTES=$(printf '%s\n' \
-            "폰에서 아래 파일을 눌러 바로 설치하세요." \
-            "" \
-            "- **LinkSaver.apk** — 대부분의 폰 (arm64-v8a)" \
-            "- LinkSaver-armeabi-v7a.apk — 오래된 32비트 폰" \
-            "- LinkSaver-x86_64.apk — 에뮬레이터" \
-            "" \
-            "커밋: ${GITHUB_SHA}")
+          cat > /tmp/notes.md <<'NOTES'
+          폰에서 아래 파일을 눌러 바로 설치하세요.
+
+          - **LinkSaver.apk** — 대부분의 폰 (arm64-v8a)
+          - LinkSaver-armeabi-v7a.apk — 오래된 32비트 폰
+          - LinkSaver-x86_64.apk — 에뮬레이터
+
+          앱 안에서 `설정 > 앱 업데이트` 로도 받을 수 있습니다.
+          NOTES
+          echo "" >> /tmp/notes.md
+          echo "버전: 1.0.${GITHUB_RUN_NUMBER} · 커밋: ${GITHUB_SHA}" >> /tmp/notes.md
 
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest \
-            --title "링크세이버 최신 빌드" \
-            --notes "$NOTES" \
-            dist/LinkSaver.apk \
-            dist/LinkSaver-armeabi-v7a.apk \
-            dist/LinkSaver-x86_64.apk
+          gh release create latest --title "링크세이버 1.0.${GITHUB_RUN_NUMBER}" --notes-file /tmp/notes.md dist/LinkSaver.apk dist/LinkSaver-armeabi-v7a.apk dist/LinkSaver-x86_64.apk dist/latest.json
 
           echo "## 설치 링크" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -138,7 +152,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linksaver-apk
-          path: dist/*.apk
+          path: dist/*
           if-no-files-found: error
           retention-days: 30
 
@@ -189,8 +203,7 @@ jobs:
           cp "$SUM" last-failure.txt
           cp /tmp/gradle.log gradle-full.log
           git add -A
-          git -c user.name='github-actions' -c user.email='actions@github.com' \
-              commit -q -m "ci: 빌드 실패 로그 ($GITHUB_SHA)"
+          git -c user.name='github-actions' -c user.email='actions@github.com' commit -q -m "ci: 빌드 실패 로그 ($GITHUB_SHA)"
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs
 
       - name: Clean up release keystore

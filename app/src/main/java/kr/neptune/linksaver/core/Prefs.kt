@@ -43,6 +43,14 @@ class Prefs(context: Context) {
         return generated
     }
 
+    /**
+     * 인스타는 로그인 세션을 쓰면 "의심스러운 로그인" 경고가 오는 경우가 있다.
+     * 켜두면 먼저 익명으로 시도하고, 실패할 때만 로그인 세션을 쓴다.
+     */
+    var instagramAnonymousFirst: Boolean
+        get() = sp.getBoolean("ig_anonymous_first", true)
+        set(value) = sp.edit().putBoolean("ig_anonymous_first", value).apply()
+
     /** 자동 최신화 사용 여부 */
     var autoUpdateEngine: Boolean
         get() = sp.getBoolean("auto_update_engine", true)

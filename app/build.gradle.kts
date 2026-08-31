@@ -20,8 +20,10 @@ android {
         applicationId = "kr.neptune.linksaver"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        // CI 실행번호로 버전을 매긴다. 앱이 릴리스의 latest.json 과 비교해
+        // 새 버전이 있으면 스스로 받아 설치할 수 있게 하기 위함.
+        versionCode = 1 + ((System.getenv("GITHUB_RUN_NUMBER") ?: "").toIntOrNull() ?: 0)
+        versionName = "1.0." + ((System.getenv("GITHUB_RUN_NUMBER") ?: "0"))
 
         // ABI 제한은 아래 splits.abi 한 곳에서만 한다.
         // AGP 8.x 는 ndk.abiFilters 와 splits.abi 를 동시에 쓰면 설정 충돌로 실패한다.

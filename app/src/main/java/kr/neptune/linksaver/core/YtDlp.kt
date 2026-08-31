@@ -138,7 +138,10 @@ object YtDlp {
 
     // ---------------------------------------------------------------- 공통 옵션
 
-    private fun YoutubeDLRequest.applyCommon(context: Context): YoutubeDLRequest {
+    private fun YoutubeDLRequest.applyCommon(
+        context: Context,
+        useCookies: Boolean = true
+    ): YoutubeDLRequest {
         // --no-warnings 를 켜면 안 된다.
         // 틱톡은 모바일 API 실패를 경고로 처리한 뒤 웹페이지로 넘어가므로,
         // 경고를 숨기면 진짜 실패 사유가 사라지고 폴백의 403 만 보인다.
@@ -146,11 +149,13 @@ object YtDlp {
         addOption("--socket-timeout", "30")
         addOption("--retries", "3")
 
-        // 사용자가 직접 내보낸 cookies.txt 가 있으면 사용 (인스타 성공률 상승)
-        val path = Prefs.get(context).cookiesPath
-        if (path != null) {
-            val f = File(path)
-            if (f.exists() && f.canRead()) addOption("--cookies", f.absolutePath)
+        // 저장된 세션 쿠키. 익명 시도에서는 일부러 빼서 계정 노출을 줄인다.
+        if (useCookies) {
+            val path = Prefs.get(context).cookiesPath
+            if (path != null) {
+                val f = File(path)
+                if (f.exists() && f.canRead()) addOption("--cookies", f.absolutePath)
+            }
         }
         return this
     }
@@ -182,18 +187,32 @@ object YtDlp {
      * 기본 경로가 막히는 게시물이 플랫폼마다 있어서, 엔진이 제공하는
      * 대체 경로를 순서대로 시도한다.
      */
-    private fun apiVariants(context: Context, url: String): List<Pair<String, String?>> {
+    private data class Attempt(
+        val label: String,
+        val extractorArgs: String? = null,
+        val useCookies: Boolean = true
+    )
+
+    private fun attempts(context: Context, url: String): List<Attempt> {
         val prefs = Prefs.get(context)
         val cookies = prefs.cookiesPath
         val hasCookies = cookies != null && File(cookies).exists()
 
         return when (UrlUtil.platformOf(url)) {
+            // 인스타는 세션을 쓸 때마다 계정에 흔적이 남고 경고가 올 수 있다.
+            // 익명으로 되는 게시물은 익명으로 받고, 안 되는 것만 로그인으로 넘긴다.
+            Platform.INSTAGRAM ->
+                if (hasCookies && prefs.instagramAnonymousFirst) listOf(
+                    Attempt("익명", useCookies = false),
+                    Attempt("로그인", useCookies = true)
+                ) else listOf(Attempt("기본"))
+
             Platform.TWITTER ->
-                if (hasCookies) listOf("기본" to null)
+                if (hasCookies) listOf(Attempt("기본"))
                 else listOf(
-                    "기본" to null,
-                    "syndication" to "twitter:api=syndication",
-                    "legacy" to "twitter:api=legacy"
+                    Attempt("기본"),
+                    Attempt("syndication", "twitter:api=syndication"),
+                    Attempt("legacy", "twitter:api=legacy")
                 )
 
             // 틱톡 기본 경로는 웹페이지를 긁는데 403 을 자주 받는다.
@@ -203,18 +222,22 @@ object YtDlp {
             Platform.TIKTOK -> {
                 val device = prefs.tiktokDeviceId()
                 listOf(
-                    "기본" to null,
-                    "모바일API(trill/싱가포르)" to
+                    Attempt("기본"),
+                    Attempt(
+                        "모바일API(trill/싱가포르)",
                         "tiktok:device_id=" + device +
-                        ";api_hostname=api22-normal-c-alisg.tiktokv.com" +
-                        ";app_name=trill;aid=1180",
-                    "모바일API(musical_ly/미국)" to
+                            ";api_hostname=api22-normal-c-alisg.tiktokv.com" +
+                            ";app_name=trill;aid=1180"
+                    ),
+                    Attempt(
+                        "모바일API(musical_ly/미국)",
                         "tiktok:device_id=" + device +
-                        ";api_hostname=api16-normal-c-useast1a.tiktokv.com"
+                            ";api_hostname=api16-normal-c-useast1a.tiktokv.com"
+                    )
                 )
             }
 
-            else -> listOf("기본" to null)
+            else -> listOf(Attempt("기본"))
         }
     }
 
@@ -266,10 +289,11 @@ object YtDlp {
         ensureInit(context)
         val failures = mutableListOf<Pair<String, String>>()
 
-        for ((label, args) in apiVariants(context, url)) {
+        for (attempt in attempts(context, url)) {
+            val label = attempt.label
             val request = YoutubeDLRequest(url).apply {
-                applyCommon(context)
-                applyApiVariant(args)
+                applyCommon(context, attempt.useCookies)
+                applyApiVariant(attempt.extractorArgs)
                 addOption("--dump-json")
                 addOption("--ignore-errors")
                 // 인스타 사진은 formats 가 비어 있어 기본값으로는 항목 자체가 사라진다.
@@ -369,14 +393,15 @@ object YtDlp {
         val template = File(outDir, "%(autonumber)03d_%(id)s.%(ext)s").absolutePath
         val failures = mutableListOf<Pair<String, String>>()
 
-        for ((label, args) in apiVariants(context, url)) {
+        for (attempt in attempts(context, url)) {
+            val label = attempt.label
             // 재시도 전에 직전 시도의 잔여물을 지운다
             outDir.listFiles()?.forEach { it.delete() }
 
             val request = YoutubeDLRequest(url).apply {
-                applyCommon(context)
+                applyCommon(context, attempt.useCookies)
                 applyQuality(quality)
-                applyApiVariant(args)
+                applyApiVariant(attempt.extractorArgs)
                 addOption("-o", template)
                 if (!playlistItems.isNullOrBlank()) {
                     addOption("--playlist-items", playlistItems)

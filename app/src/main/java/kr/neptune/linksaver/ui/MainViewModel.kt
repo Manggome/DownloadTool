@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kr.neptune.linksaver.core.AppUpdater
 import kr.neptune.linksaver.core.CookieExport
 import kr.neptune.linksaver.core.DownloadRepo
 import kr.neptune.linksaver.core.DownloadService
@@ -76,12 +77,36 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private var probeJob: Job? = null
     private var probeProcessId: String? = null
 
+    /** 앱 자체 업데이트 상태 */
+    val updateState: StateFlow<AppUpdater.State> = AppUpdater.state
+
+    val appVersionName: String get() = AppUpdater.currentVersionName
+
     init {
         viewModelScope.launch {
             YtDlp.ensureInit(app)
             _ytdlpVersion.value = YtDlp.version(app)
         }
+        // 새 버전이 있을 때만 조용히 알린다 (실패나 "최신" 상태는 표시하지 않음)
+        viewModelScope.launch { AppUpdater.check(silent = true) }
     }
+
+    fun checkAppUpdate() {
+        viewModelScope.launch { AppUpdater.check() }
+    }
+
+    fun downloadAppUpdate() {
+        viewModelScope.launch { AppUpdater.download(app) }
+    }
+
+    fun installAppUpdate(context: Context, apk: File) {
+        runCatching { AppUpdater.install(context, apk) }
+            .onFailure {
+                _toast.value = "설치 화면을 열 수 없습니다. 이 앱에 앱 설치 권한을 허용해 주세요."
+            }
+    }
+
+    fun dismissAppUpdate() = AppUpdater.dismiss()
 
     fun setUrl(value: String) {
         _url.value = value
@@ -287,6 +312,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun setAutoPaste(enabled: Boolean) {
         prefs.autoPasteFromClipboard = enabled
+    }
+
+    val instagramAnonymousFirst: Boolean get() = prefs.instagramAnonymousFirst
+
+    fun setInstagramAnonymousFirst(enabled: Boolean) {
+        prefs.instagramAnonymousFirst = enabled
     }
 
     /** 사용자가 고른 cookies.txt 를 앱 내부로 복사해 둔다 */

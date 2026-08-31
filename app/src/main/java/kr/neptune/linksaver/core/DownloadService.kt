@@ -234,14 +234,15 @@ class DownloadService : Service() {
                     savedCount = uris.size,
                     savedUris = uris,
                     statusLine = "${uris.size}개 저장 완료",
-                    error = null
+                    error = null,
+                    finishedAt = System.currentTimeMillis()
                 )
             }
             Notifications.showResult(
                 context = this,
                 key = taskId.hashCode(),
                 title = "다운로드 완료",
-                text = "${titleForNoti.take(40)} · ${uris.size}개 저장됨\n${MediaImporter.savedLocationText()}",
+                text = "${titleForNoti.take(40)} · ${uris.size}개 저장됨\n${MediaImporter.savedLocationText(this)}",
                 success = true
             )
         } catch (t: Throwable) {
@@ -266,7 +267,8 @@ class DownloadService : Service() {
                 state = TaskState.FAILED,
                 error = message,
                 rawError = raw?.takeIf { s -> s.isNotBlank() },
-                statusLine = "실패"
+                statusLine = "실패",
+                finishedAt = System.currentTimeMillis()
             )
         }
         Notifications.showResult(this, taskId.hashCode(), "다운로드 실패", message, success = false)

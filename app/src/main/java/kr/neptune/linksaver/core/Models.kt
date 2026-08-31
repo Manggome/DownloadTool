@@ -69,7 +69,9 @@ data class DownloadTask(
     /** yt-dlp 가 실제로 뱉은 원문 (진단용, "자세히"에서 노출) */
     val rawError: String? = null,
     val savedCount: Int = 0,
-    val savedUris: List<Uri> = emptyList()
+    val savedUris: List<Uri> = emptyList(),
+    /** 끝난 시각(epoch ms). 이력 정렬에 쓴다. 0 이면 아직 진행 중 */
+    val finishedAt: Long = 0L
 ) {
     val isFinished: Boolean
         get() = state == TaskState.DONE || state == TaskState.FAILED || state == TaskState.CANCELED

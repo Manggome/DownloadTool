@@ -20,7 +20,9 @@ import java.io.File
 object MediaImporter {
 
     private const val TAG = "MediaImporter"
-    const val ALBUM = "LinkSaver"
+
+    /** 사용자가 설정에서 바꿀 수 있는 앨범 이름 */
+    fun album(context: Context): String = Prefs.get(context).albumName
 
     private val IMAGE_EXT = setOf("jpg", "jpeg", "png", "webp", "gif", "heic", "heif")
     private val VIDEO_EXT = setOf("mp4", "mkv", "webm", "mov", "m4v", "3gp", "ts")
@@ -74,15 +76,16 @@ object MediaImporter {
     }
 
     private fun importOne(context: Context, file: File, prefix: String?, index: Int): Uri? {
+        val albumName = album(context)
         val kind = kindOf(file) ?: run {
             Log.w(TAG, "지원하지 않는 확장자: ${file.name}")
             return null
         }
         val displayName = buildDisplayName(file, prefix, index)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            insertScoped(context, file, kind, displayName)
+            insertScoped(context, file, kind, displayName, albumName)
         } else {
-            insertLegacy(context, file, kind, displayName)
+            insertLegacy(context, file, kind, displayName, albumName)
         }
     }
 
@@ -103,16 +106,22 @@ object MediaImporter {
     // ------------------------------------------------------------ Android 10+
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    private fun insertScoped(context: Context, file: File, kind: Kind, displayName: String): Uri? {
+    private fun insertScoped(
+        context: Context,
+        file: File,
+        kind: Kind,
+        displayName: String,
+        albumName: String
+    ): Uri? {
         val collection = when (kind) {
             Kind.IMAGE -> MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             Kind.VIDEO -> MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             Kind.AUDIO -> MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         }
         val relative = when (kind) {
-            Kind.IMAGE -> "${Environment.DIRECTORY_PICTURES}/$ALBUM"
-            Kind.VIDEO -> "${Environment.DIRECTORY_MOVIES}/$ALBUM"
-            Kind.AUDIO -> "${Environment.DIRECTORY_MUSIC}/$ALBUM"
+            Kind.IMAGE -> "${Environment.DIRECTORY_PICTURES}/$albumName"
+            Kind.VIDEO -> "${Environment.DIRECTORY_MOVIES}/$albumName"
+            Kind.AUDIO -> "${Environment.DIRECTORY_MUSIC}/$albumName"
         }
 
         val values = ContentValues().apply {
@@ -141,13 +150,19 @@ object MediaImporter {
 
     // ------------------------------------------------------------ Android 9 이하
 
-    private fun insertLegacy(context: Context, file: File, kind: Kind, displayName: String): Uri? {
+    private fun insertLegacy(
+        context: Context,
+        file: File,
+        kind: Kind,
+        displayName: String,
+        albumName: String
+    ): Uri? {
         val publicDir = when (kind) {
             Kind.IMAGE -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
             Kind.VIDEO -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
             Kind.AUDIO -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
         }
-        val albumDir = File(publicDir, ALBUM).apply { mkdirs() }
+        val albumDir = File(publicDir, albumName).apply { mkdirs() }
         val target = uniqueFile(albumDir, displayName)
 
         file.inputStream().use { input ->
@@ -178,6 +193,8 @@ object MediaImporter {
     }
 
     /** 저장 위치를 사용자에게 보여줄 문자열 */
-    fun savedLocationText(): String =
-        "사진 → Pictures/$ALBUM · 영상 → Movies/$ALBUM · 오디오 → Music/$ALBUM"
+    fun savedLocationText(context: Context): String {
+        val name = album(context)
+        return "사진 → Pictures/$name · 영상 → Movies/$name · 오디오 → Music/$name"
+    }
 }

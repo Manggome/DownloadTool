@@ -316,6 +316,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     val instagramAnonymousFirst: Boolean get() = prefs.instagramAnonymousFirst
 
+    val albumName: String get() = prefs.albumName
+
+    fun setAlbumName(value: String) {
+        prefs.albumName = value
+        _toast.value = "저장 폴더를 " + prefs.albumName + " 로 바꿨습니다"
+    }
+
     fun setInstagramAnonymousFirst(enabled: Boolean) {
         prefs.instagramAnonymousFirst = enabled
     }

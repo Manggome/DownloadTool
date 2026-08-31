@@ -440,6 +440,7 @@ private fun InputCard(
 
 @Composable
 private fun EmptyHint() {
+    val context = LocalContext.current
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
@@ -458,7 +459,7 @@ private fun EmptyHint() {
             Spacer(Modifier.height(4.dp))
             Text(
                 "받을 수 있는 사이트는 내장된 yt-dlp 엔진이 결정합니다. 지원하지 않는 곳은 실패로 표시됩니다. " +
-                    "저장 위치: ${MediaImporter.savedLocationText()}",
+                    "저장 위치: ${MediaImporter.savedLocationText(context)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -657,6 +658,45 @@ private fun MediaCell(meta: MediaMeta, selected: Boolean, onClick: () -> Unit) {
             )
         }
     }
+}
+
+// ---------------------------------------------------------------- 저장 폴더
+
+@Composable
+private fun AlbumNameDialog(
+    initial: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var value by remember { mutableStateOf(initial) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("저장 폴더 이름") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    label = { Text("폴더 이름") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "사진은 Pictures, 영상은 Movies, 오디오는 Music 아래 이 이름으로 저장됩니다. " +
+                        "이미 저장된 파일은 그대로 남습니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value) }) { Text("저장") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("취소") }
+        }
+    )
 }
 
 // ---------------------------------------------------------------- 오류 상세
@@ -892,6 +932,20 @@ private fun SettingsSheet(
     ) { vm.refreshLoginState() }
     var autoPaste by remember { mutableStateOf(vm.autoPaste) }
     var igAnonFirst by remember { mutableStateOf(vm.instagramAnonymousFirst) }
+    var albumName by remember { mutableStateOf(vm.albumName) }
+    var showAlbumDialog by remember { mutableStateOf(false) }
+
+    if (showAlbumDialog) {
+        AlbumNameDialog(
+            initial = albumName,
+            onConfirm = { entered ->
+                vm.setAlbumName(entered)
+                albumName = vm.albumName
+                showAlbumDialog = false
+            },
+            onDismiss = { showAlbumDialog = false }
+        )
+    }
 
     val cookiePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -1038,12 +1092,14 @@ private fun SettingsSheet(
 
             HorizontalDivider()
 
-            Text("저장 위치", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text(
-                MediaImporter.savedLocationText(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text("저장 폴더", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+
+            SettingRow(
+                title = albumName,
+                subtitle = MediaImporter.savedLocationText(context)
+            ) {
+                TextButton(onClick = { showAlbumDialog = true }) { Text("변경") }
+            }
 
             Text(
                 "※ 개인 소장 용도로만 사용하세요. 저작권자의 허락 없이 재업로드·배포하는 것은 위법일 수 있으며, 각 플랫폼의 이용약관에도 어긋납니다.",

@@ -51,6 +51,17 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("ig_anonymous_first", true)
         set(value) = sp.edit().putBoolean("ig_anonymous_first", value).apply()
 
+    /**
+     * 갤러리에 만들 앨범(폴더) 이름.
+     * 사진은 Pictures/<이름>, 영상은 Movies/<이름> 에 저장된다.
+     */
+    var albumName: String
+        get() = sp.getString("album_name", null)?.ifBlank { null } ?: DEFAULT_ALBUM
+        set(value) {
+            val safe = sanitizeAlbum(value)
+            sp.edit().putString("album_name", safe).apply()
+        }
+
     /** 자동 최신화 사용 여부 */
     var autoUpdateEngine: Boolean
         get() = sp.getBoolean("auto_update_engine", true)
@@ -62,6 +73,17 @@ class Prefs(context: Context) {
 
         /** 최신화에 실패했을 때 다시 시도하기까지의 최소 간격 */
         const val ENGINE_RETRY_INTERVAL_MS = 60L * 60 * 1000 // 1시간
+
+        const val DEFAULT_ALBUM = "LinkSaver"
+
+        /** 파일 경로에 쓸 수 없는 문자를 걷어낸다 */
+        fun sanitizeAlbum(raw: String): String {
+            val cleaned = raw
+                .replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "")
+                .trim()
+                .take(40)
+            return cleaned.ifBlank { DEFAULT_ALBUM }
+        }
 
         @Volatile
         private var instance: Prefs? = null

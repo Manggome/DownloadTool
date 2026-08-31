@@ -160,7 +160,17 @@ object YtDlp {
         return this
     }
 
-    private fun YoutubeDLRequest.applyQuality(quality: Quality): YoutubeDLRequest {
+    private fun YoutubeDLRequest.applyQuality(
+        quality: Quality,
+        formatId: String? = null
+    ): YoutubeDLRequest {
+        // 직접 고른 포맷. 영상만 있는 포맷이면 최고 음질을 붙여 합친다.
+        if (quality == Quality.CUSTOM && !formatId.isNullOrBlank()) {
+            addOption("-f", formatId + "+ba/" + formatId)
+            addOption("--merge-output-format", "mp4")
+            return this
+        }
+
         when (quality) {
             Quality.BEST -> {
                 addOption("-f", "bv*+ba/b")
@@ -177,6 +187,12 @@ object YtDlp {
                 addOption("-x")
                 addOption("--audio-format", "mp3")
                 addOption("--audio-quality", "0")
+            }
+
+            // 포맷을 못 고른 경우엔 최고 화질과 같게 동작한다
+            Quality.CUSTOM -> {
+                addOption("-f", "bv*+ba/b")
+                addOption("--merge-output-format", "mp4")
             }
         }
         return this
@@ -352,7 +368,50 @@ object YtDlp {
             durationSec = duration,
             width = json.optInt("width", 0).takeIf { it > 0 },
             height = json.optInt("height", 0).takeIf { it > 0 },
-            isImage = isImage
+            isImage = isImage,
+            formats = parseFormats(json)
+        )
+    }
+
+    /**
+     * 고를 수 있는 실제 포맷만 남긴다.
+     * 스토리보드(미리보기 조각)나 미디어가 없는 항목은 걸러낸다.
+     */
+    private fun parseFormats(json: JSONObject): List<MediaFormat> {
+        val arr = json.optJSONArray("formats") ?: return emptyList()
+
+        val list = (0 until arr.length()).mapNotNull { i ->
+            val f = arr.optJSONObject(i) ?: return@mapNotNull null
+            val id = f.optString("format_id").ifBlank { return@mapNotNull null }
+            val ext = f.optString("ext").ifBlank { null }
+            val vcodec = f.optString("vcodec").ifBlank { null }
+            val acodec = f.optString("acodec").ifBlank { null }
+            val note = f.optString("format_note").ifBlank { null }
+
+            val isStoryboard = ext == "mhtml" ||
+                (note != null && note.contains("storyboard", ignoreCase = true))
+            val hasMedia = (vcodec != null && vcodec != "none") ||
+                (acodec != null && acodec != "none")
+            if (isStoryboard || !hasMedia) return@mapNotNull null
+
+            MediaFormat(
+                formatId = id,
+                ext = ext,
+                width = f.optInt("width", 0).takeIf { it > 0 },
+                height = f.optInt("height", 0).takeIf { it > 0 },
+                filesizeBytes = f.optLong("filesize", 0L).takeIf { it > 0L }
+                    ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L },
+                tbrKbps = f.optDouble("tbr").takeIf { !it.isNaN() && it > 0 },
+                vcodec = vcodec,
+                acodec = acodec,
+                note = note
+            )
+        }
+
+        // 좋은 것부터. 해상도 -> 비트레이트 순
+        return list.sortedWith(
+            compareByDescending<MediaFormat> { it.height ?: 0 }
+                .thenByDescending { it.tbrKbps ?: 0.0 }
         )
     }
 
@@ -385,6 +444,8 @@ object YtDlp {
         processId: String,
         /** "1,3,7" 처럼 받을 항목만 지정. null 이면 게시물 전체 */
         playlistItems: String? = null,
+        /** Quality.CUSTOM 일 때 사용자가 고른 포맷 */
+        formatId: String? = null,
         onProgress: (progress: Float, etaSec: Long, line: String) -> Unit
     ): List<File> = withContext(Dispatchers.IO) {
         ensureInit(context)
@@ -406,7 +467,7 @@ object YtDlp {
 
             val request = YoutubeDLRequest(url).apply {
                 applyCommon(context, attempt.useCookies)
-                applyQuality(quality)
+                applyQuality(quality, formatId)
                 applyApiVariant(attempt.extractorArgs)
                 addOption("-o", template)
                 if (!playlistItems.isNullOrBlank()) {

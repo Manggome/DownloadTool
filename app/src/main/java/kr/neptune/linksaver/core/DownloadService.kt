@@ -80,7 +80,8 @@ class DownloadService : Service() {
                     expectedCount = intent.getIntExtra(EXTRA_EXPECTED_COUNT, 0),
                     knownTitle = intent.getStringExtra(EXTRA_TITLE),
                     knownUploader = intent.getStringExtra(EXTRA_UPLOADER),
-                    knownThumbnail = intent.getStringExtra(EXTRA_THUMBNAIL)
+                    knownThumbnail = intent.getStringExtra(EXTRA_THUMBNAIL),
+                    formatId = intent.getStringExtra(EXTRA_FORMAT_ID)
                 )
             }
 
@@ -103,7 +104,8 @@ class DownloadService : Service() {
         expectedCount: Int,
         knownTitle: String?,
         knownUploader: String?,
-        knownThumbnail: String?
+        knownThumbnail: String?,
+        formatId: String?
     ) {
         val taskId = UUID.randomUUID().toString()
         DownloadRepo.add(
@@ -117,6 +119,7 @@ class DownloadService : Service() {
                 title = knownTitle ?: "정보 가져오는 중…",
                 uploader = knownUploader,
                 thumbnail = knownThumbnail,
+                formatId = formatId,
                 state = TaskState.QUEUED
             )
         )
@@ -124,7 +127,7 @@ class DownloadService : Service() {
 
         scope.launch {
             try {
-                runWithRetry(taskId, rawUrl, quality, playlistItems, knownTitle != null)
+                runWithRetry(taskId, rawUrl, quality, playlistItems, formatId, knownTitle != null)
             } catch (t: Throwable) {
                 Log.e(TAG, "task crashed", t)
                 fail(taskId, YtDlp.humanizeError(t.message), raw = rawOf(t))
@@ -149,6 +152,7 @@ class DownloadService : Service() {
         rawUrl: String,
         quality: Quality,
         playlistItems: String?,
+        formatId: String?,
         alreadyProbed: Boolean
     ) {
         val autoRetry = Prefs.get(this).autoRetry
@@ -156,7 +160,7 @@ class DownloadService : Service() {
 
         while (true) {
             val outcome = gate.withPermit {
-                runTask(taskId, rawUrl, quality, playlistItems, alreadyProbed)
+                runTask(taskId, rawUrl, quality, playlistItems, formatId, alreadyProbed)
             }
 
             when (outcome) {
@@ -232,6 +236,7 @@ class DownloadService : Service() {
         rawUrl: String,
         quality: Quality,
         playlistItems: String?,
+        formatId: String?,
         alreadyProbed: Boolean
     ): Outcome {
         val workDir = File(cacheDir, "dl/$taskId")
@@ -286,7 +291,8 @@ class DownloadService : Service() {
                 quality = quality,
                 outDir = workDir,
                 processId = taskId,
-                playlistItems = playlistItems
+                playlistItems = playlistItems,
+                formatId = formatId
             ) { progress, eta, line ->
                 DownloadRepo.update(taskId) {
                     it.copy(
@@ -470,6 +476,7 @@ class DownloadService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_UPLOADER = "uploader"
         const val EXTRA_THUMBNAIL = "thumbnail"
+        const val EXTRA_FORMAT_ID = "format_id"
 
         /**
          * @param playlistItems "1,3,7" 형식. null 이면 게시물 전체
@@ -483,7 +490,8 @@ class DownloadService : Service() {
             expectedCount: Int = 0,
             knownTitle: String? = null,
             knownUploader: String? = null,
-            knownThumbnail: String? = null
+            knownThumbnail: String? = null,
+            formatId: String? = null
         ) {
             val intent = Intent(context, DownloadService::class.java).apply {
                 action = ACTION_ENQUEUE
@@ -494,6 +502,7 @@ class DownloadService : Service() {
                 putExtra(EXTRA_TITLE, knownTitle)
                 putExtra(EXTRA_UPLOADER, knownUploader)
                 putExtra(EXTRA_THUMBNAIL, knownThumbnail)
+                putExtra(EXTRA_FORMAT_ID, formatId)
             }
             ContextCompat.startForegroundService(context, intent)
         }

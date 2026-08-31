@@ -16,6 +16,7 @@ import kr.neptune.linksaver.core.AppUpdater
 import kr.neptune.linksaver.core.CookieExport
 import kr.neptune.linksaver.core.DownloadRepo
 import kr.neptune.linksaver.core.DownloadService
+import kr.neptune.linksaver.core.MediaFormat
 import kr.neptune.linksaver.core.MediaMeta
 import kr.neptune.linksaver.core.Prefs
 import kr.neptune.linksaver.core.Quality
@@ -41,6 +42,14 @@ sealed interface PickerState {
         val allSelected: Boolean get() = selected.size == items.size
         val canConfirm: Boolean get() = selected.isNotEmpty()
     }
+
+    /** 화질을 "직접 선택" 으로 두었을 때, 실제 포맷 목록에서 고르는 단계 */
+    data class ChoosingFormat(
+        val url: String,
+        val items: List<MediaMeta>,
+        val selected: Set<Int>,
+        val formats: List<MediaFormat>
+    ) : PickerState
 }
 
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
@@ -191,10 +200,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
 
                 // 1개뿐이면 고를 것이 없다
-                items.size == 1 -> {
-                    _picker.value = PickerState.Hidden
-                    startDownload(canonical, items, items.map { it.playlistIndex }.toSet())
-                }
+                items.size == 1 ->
+                    proceed(canonical, items, items.map { it.playlistIndex }.toSet())
 
                 // 여러 개 — 사용자가 고른다 (기본은 전체 선택)
                 else -> {
@@ -240,15 +247,43 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             _toast.value = "받을 항목을 하나 이상 선택해 주세요"
             return
         }
-        _picker.value = PickerState.Hidden
-        startDownload(current.url, current.items, current.selected)
+        proceed(current.url, current.items, current.selected)
     }
 
     fun dismissPicker() {
         _picker.value = PickerState.Hidden
     }
 
-    private fun startDownload(url: String, items: List<MediaMeta>, selected: Set<Int>) {
+    /**
+     * 항목 선택이 끝난 뒤. 화질을 직접 고르기로 했고 고를 게 둘 이상이면
+     * 포맷 목록을 띄우고, 그렇지 않으면 바로 받는다.
+     */
+    private fun proceed(url: String, items: List<MediaMeta>, selected: Set<Int>) {
+        val formats = items.firstOrNull { it.playlistIndex in selected }?.formats
+            ?: items.firstOrNull()?.formats
+            ?: emptyList()
+
+        if (_quality.value == Quality.CUSTOM && formats.size > 1) {
+            _picker.value = PickerState.ChoosingFormat(url, items, selected, formats)
+        } else {
+            _picker.value = PickerState.Hidden
+            startDownload(url, items, selected, formatId = null)
+        }
+    }
+
+    /** 포맷 목록에서 하나를 고름. null 이면 원본/최고화질 */
+    fun chooseFormat(formatId: String?) {
+        val current = _picker.value as? PickerState.ChoosingFormat ?: return
+        _picker.value = PickerState.Hidden
+        startDownload(current.url, current.items, current.selected, formatId)
+    }
+
+    private fun startDownload(
+        url: String,
+        items: List<MediaMeta>,
+        selected: Set<Int>,
+        formatId: String?
+    ) {
         val head = items.firstOrNull()
         // 전부 고른 경우엔 --playlist-items 를 붙이지 않는다 (yt-dlp 기본 동작이 더 안전)
         val playlistItems =
@@ -261,6 +296,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             quality = _quality.value,
             playlistItems = playlistItems,
             expectedCount = selected.size,
+            formatId = formatId,
             knownTitle = head?.title,
             knownUploader = head?.uploader,
             knownThumbnail = items.firstOrNull { it.playlistIndex in selected }?.thumbnail
@@ -270,8 +306,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         _toast.value = "${selected.size}개 다운로드를 시작했습니다"
     }
 
-    fun retry(url: String, quality: Quality, playlistItems: String?) {
-        DownloadService.start(app, url, quality, playlistItems = playlistItems)
+    fun retry(url: String, quality: Quality, playlistItems: String?, formatId: String?) {
+        DownloadService.start(
+            app, url, quality,
+            playlistItems = playlistItems,
+            formatId = formatId
+        )
     }
 
     fun cancel(taskId: String) {

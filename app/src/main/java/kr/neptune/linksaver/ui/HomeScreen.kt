@@ -190,7 +190,9 @@ fun HomeScreen(vm: MainViewModel) {
                     TaskCard(
                         task = task,
                         onCancel = { vm.cancel(task.id) },
-                        onRetry = { vm.retry(task.url, task.quality, task.playlistItems) },
+                        onRetry = {
+                            vm.retry(task.url, task.quality, task.playlistItems, task.formatId)
+                        },
                         onRemove = { vm.removeTask(task.id) },
                         onDetails = { detailsTask = task },
                         onOpen = {
@@ -222,6 +224,13 @@ fun HomeScreen(vm: MainViewModel) {
             onSelectAll = vm::selectAll,
             onClearAll = vm::clearSelection,
             onConfirm = vm::confirmSelection,
+            onDismiss = vm::dismissPicker
+        )
+
+        is PickerState.ChoosingFormat -> FormatPickerSheet(
+            state = state,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            onChoose = vm::chooseFormat,
             onDismiss = vm::dismissPicker
         )
 
@@ -413,9 +422,17 @@ private fun InputCard(
                         onClick = { onQualityChange(item) },
                         shape = SegmentedButtonDefaults.itemShape(index, Quality.entries.size)
                     ) {
-                        Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(item.short, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
+            }
+
+            if (quality == Quality.CUSTOM) {
+                Text(
+                    "조회한 뒤 실제 포맷 목록에서 고릅니다. 고를 게 하나뿐이면 바로 받습니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -739,6 +756,102 @@ private fun ErrorDetailsDialog(task: DownloadTask, onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss) { Text("닫기") }
         }
     )
+}
+
+// ---------------------------------------------------------------- 포맷 선택
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FormatPickerSheet(
+    state: PickerState.ChoosingFormat,
+    sheetState: androidx.compose.material3.SheetState,
+    onChoose: (String?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                "화질 선택",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "이 게시물에서 실제로 받을 수 있는 " + state.formats.size + "개입니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // 맨 위는 항상 원본/최고화질 (엔진이 알아서 최적 조합을 고른다)
+            FormatRow(
+                title = "원본 / 최고 화질",
+                subtitle = "엔진이 가장 좋은 조합을 고릅니다",
+                highlight = true,
+                onClick = { onChoose(null) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 340.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                state.formats.forEach { format ->
+                    FormatRow(
+                        title = format.label,
+                        subtitle = "포맷 " + format.formatId,
+                        highlight = false,
+                        onClick = { onChoose(format.formatId) }
+                    )
+                }
+            }
+
+            TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                Text("취소")
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun FormatRow(
+    title: String,
+    subtitle: String,
+    highlight: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (highlight) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 작업 카드

@@ -905,6 +905,7 @@ private fun statusText(task: DownloadTask): String = when (task.state) {
         val eta = if (task.etaSec > 0) " · 약 ${task.etaSec}초 남음" else ""
         "다운로드 중 $percent%$eta"
     }
+    TaskState.RETRY_WAIT -> task.statusLine.ifBlank { "재시도 대기 중" }
     TaskState.SAVING -> "갤러리에 저장 중…"
     TaskState.DONE -> "${task.savedCount}개 저장 완료"
     TaskState.CANCELED -> "취소됨"
@@ -933,6 +934,8 @@ private fun SettingsSheet(
     var autoPaste by remember { mutableStateOf(vm.autoPaste) }
     var igAnonFirst by remember { mutableStateOf(vm.instagramAnonymousFirst) }
     var albumName by remember { mutableStateOf(vm.albumName) }
+    var concurrent by remember { mutableStateOf(vm.maxConcurrent) }
+    var autoRetry by remember { mutableStateOf(vm.autoRetry) }
     var showAlbumDialog by remember { mutableStateOf(false) }
 
     if (showAlbumDialog) {
@@ -1089,6 +1092,45 @@ private fun SettingsSheet(
                     }
                 )
             }
+
+            HorizontalDivider()
+
+            Text("다운로드", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+
+            SettingRow(
+                title = "실패 시 자동 재시도",
+                subtitle = "요청 제한이나 연결 오류는 15초 · 60초 · 180초 간격으로 다시 시도합니다"
+            ) {
+                Switch(
+                    checked = autoRetry,
+                    onCheckedChange = {
+                        autoRetry = it
+                        vm.setAutoRetry(it)
+                    }
+                )
+            }
+
+            Text("동시 다운로드", style = MaterialTheme.typography.bodyMedium)
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                listOf(1, 2, 3).forEachIndexed { index, count ->
+                    SegmentedButton(
+                        selected = concurrent == count,
+                        onClick = {
+                            concurrent = count
+                            vm.setMaxConcurrent(count)
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index, 3)
+                    ) {
+                        Text(count.toString() + "개")
+                    }
+                }
+            }
+            Text(
+                "많이 올리면 빨라지지만, 인스타·틱톡은 요청 수에 민감해 차단에 더 빨리 걸립니다. " +
+                    "바꾼 값은 다음 다운로드부터 적용됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             HorizontalDivider()
 

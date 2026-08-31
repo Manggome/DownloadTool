@@ -62,6 +62,19 @@ class Prefs(context: Context) {
             sp.edit().putString("album_name", safe).apply()
         }
 
+    /**
+     * 동시에 받을 개수.
+     * 플랫폼이 요청 수에 민감해 무턱대고 올리면 오히려 차단에 빨리 걸린다.
+     */
+    var maxConcurrentDownloads: Int
+        get() = sp.getInt("max_concurrent", 2).coerceIn(1, 3)
+        set(value) = sp.edit().putInt("max_concurrent", value.coerceIn(1, 3)).apply()
+
+    /** 일시적 실패(요청 제한 등)를 스스로 다시 시도할지 */
+    var autoRetry: Boolean
+        get() = sp.getBoolean("auto_retry", true)
+        set(value) = sp.edit().putBoolean("auto_retry", value).apply()
+
     /** 자동 최신화 사용 여부 */
     var autoUpdateEngine: Boolean
         get() = sp.getBoolean("auto_update_engine", true)

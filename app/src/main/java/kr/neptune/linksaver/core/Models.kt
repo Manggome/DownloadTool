@@ -46,7 +46,14 @@ data class MediaMeta(
         }
 }
 
-enum class TaskState { QUEUED, FETCHING, DOWNLOADING, SAVING, DONE, FAILED, CANCELED }
+enum class TaskState {
+    QUEUED, FETCHING, DOWNLOADING, SAVING,
+
+    /** 일시적 실패 후 백오프 대기 중 */
+    RETRY_WAIT,
+
+    DONE, FAILED, CANCELED
+}
 
 data class DownloadTask(
     val id: String,
@@ -71,7 +78,9 @@ data class DownloadTask(
     val savedCount: Int = 0,
     val savedUris: List<Uri> = emptyList(),
     /** 끝난 시각(epoch ms). 이력 정렬에 쓴다. 0 이면 아직 진행 중 */
-    val finishedAt: Long = 0L
+    val finishedAt: Long = 0L,
+    /** 지금까지 자동 재시도한 횟수 */
+    val retryCount: Int = 0
 ) {
     val isFinished: Boolean
         get() = state == TaskState.DONE || state == TaskState.FAILED || state == TaskState.CANCELED

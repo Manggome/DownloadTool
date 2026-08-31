@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -22,17 +23,32 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 실제 다운로드를 수행하는 포그라운드 서비스.
- * 한 번에 하나씩 순차 처리하고, 모두 끝나면 스스로 종료한다.
  *
- * 화면에서 미리 목록을 조회하고 사용자가 항목을 고른 경우
- * ([EXTRA_PLAYLIST_ITEMS] / [EXTRA_TITLE] 이 함께 들어온 경우)
- * 서비스는 조회를 건너뛰고 바로 다운로드부터 시작한다.
+ * - 동시 실행 개수는 설정값(기본 2)을 따른다. 플랫폼이 요청 수에 민감해
+ *   무턱대고 올리면 오히려 차단에 빨리 걸린다.
+ * - 일시적 실패(요청 제한, 연결 오류 등)는 백오프를 두고 스스로 재시도한다.
+ * - 화면에서 미리 조회를 끝낸 경우([EXTRA_TITLE] 이 들어온 경우) 조회를 건너뛴다.
  */
 class DownloadService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val gate = Semaphore(1)
     private val running = AtomicInteger(0)
+
+    /** 설정값은 서비스가 처음 일할 때 한 번 읽는다 */
+    private val gate by lazy {
+        Semaphore(Prefs.get(this).maxConcurrentDownloads.coerceIn(1, 3))
+    }
+
+    /** runTask 의 결과. 재시도 여부를 호출자가 판단할 수 있게 실패 사유를 함께 돌려준다 */
+    private sealed interface Outcome {
+        data object Success : Outcome
+        data object Canceled : Outcome
+        data class Failed(
+            val message: String,
+            val raw: String?,
+            val transient: Boolean
+        ) : Outcome
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -108,9 +124,7 @@ class DownloadService : Service() {
 
         scope.launch {
             try {
-                gate.withPermit {
-                    runTask(taskId, rawUrl, quality, playlistItems, alreadyProbed = knownTitle != null)
-                }
+                runWithRetry(taskId, rawUrl, quality, playlistItems, knownTitle != null)
             } catch (t: Throwable) {
                 Log.e(TAG, "task crashed", t)
                 fail(taskId, YtDlp.humanizeError(t.message), raw = rawOf(t))
@@ -126,13 +140,100 @@ class DownloadService : Service() {
         }
     }
 
-    private suspend fun runTask(
+    /**
+     * 일시적 실패는 백오프를 두고 다시 시도한다.
+     * 대기 중에는 세마포어를 놓아 다른 작업이 진행할 수 있게 한다.
+     */
+    private suspend fun runWithRetry(
         taskId: String,
         rawUrl: String,
         quality: Quality,
         playlistItems: String?,
         alreadyProbed: Boolean
     ) {
+        val autoRetry = Prefs.get(this).autoRetry
+        var attempt = 0
+
+        while (true) {
+            val outcome = gate.withPermit {
+                runTask(taskId, rawUrl, quality, playlistItems, alreadyProbed)
+            }
+
+            when (outcome) {
+                is Outcome.Success -> return
+
+                is Outcome.Canceled -> {
+                    DownloadRepo.update(taskId) {
+                        it.copy(
+                            state = TaskState.CANCELED,
+                            statusLine = "취소됨",
+                            finishedAt = System.currentTimeMillis()
+                        )
+                    }
+                    return
+                }
+
+                is Outcome.Failed -> {
+                    val canRetry = autoRetry && outcome.transient && attempt < BACKOFF_MS.size
+                    if (!canRetry) {
+                        fail(taskId, outcome.message, outcome.raw)
+                        return
+                    }
+                    attempt++
+                    if (!waitForRetry(taskId, attempt, BACKOFF_MS[attempt - 1], outcome.message)) {
+                        // 대기 중 취소됨
+                        DownloadRepo.update(taskId) {
+                            it.copy(
+                                state = TaskState.CANCELED,
+                                statusLine = "취소됨",
+                                finishedAt = System.currentTimeMillis()
+                            )
+                        }
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /** @return 계속 진행해도 되면 true, 사용자가 취소했으면 false */
+    private suspend fun waitForRetry(
+        taskId: String,
+        attempt: Int,
+        totalMs: Long,
+        reason: String
+    ): Boolean {
+        var remaining = totalMs
+        while (remaining > 0) {
+            if (DownloadRepo.get(taskId)?.state == TaskState.CANCELED) return false
+
+            val seconds = (remaining / 1000).toInt()
+            DownloadRepo.update(taskId) {
+                it.copy(
+                    state = TaskState.RETRY_WAIT,
+                    retryCount = attempt,
+                    progress = 0f,
+                    etaSec = -1,
+                    error = reason,
+                    statusLine = "재시도 대기 " + attempt + "/" + BACKOFF_MS.size +
+                        " · " + seconds + "초 후"
+                )
+            }
+            promote("재시도 대기 중", seconds.toString() + "초 후 다시 시도합니다", 0, true)
+
+            delay(1000)
+            remaining -= 1000
+        }
+        return DownloadRepo.get(taskId)?.state != TaskState.CANCELED
+    }
+
+    private suspend fun runTask(
+        taskId: String,
+        rawUrl: String,
+        quality: Quality,
+        playlistItems: String?,
+        alreadyProbed: Boolean
+    ): Outcome {
         val workDir = File(cacheDir, "dl/$taskId")
         workDir.mkdirs()
 
@@ -142,7 +243,7 @@ class DownloadService : Service() {
             if (!alreadyProbed) {
                 // 1) 링크 정규화 (t.co / instagram.com/share 리다이렉트 해제)
                 DownloadRepo.update(taskId) {
-                    it.copy(state = TaskState.FETCHING, statusLine = "링크 확인 중…")
+                    it.copy(state = TaskState.FETCHING, statusLine = "링크 확인 중…", error = null)
                 }
                 promote("링크 확인 중…", rawUrl, 0, true)
 
@@ -170,7 +271,12 @@ class DownloadService : Service() {
 
             // 3) 다운로드
             DownloadRepo.update(taskId) {
-                it.copy(state = TaskState.DOWNLOADING, progress = 0f, statusLine = "다운로드 중…")
+                it.copy(
+                    state = TaskState.DOWNLOADING,
+                    progress = 0f,
+                    statusLine = "다운로드 중…",
+                    error = null
+                )
             }
 
             val titleForNoti = DownloadRepo.get(taskId)?.title.orEmpty().ifBlank { "다운로드" }
@@ -200,18 +306,17 @@ class DownloadService : Service() {
             }
 
             if (files.isEmpty()) {
-                fail(
-                    taskId,
-                    "받을 수 있는 파일이 없습니다. 비공개 게시물이거나 링크가 잘못됐을 수 있습니다.",
+                return Outcome.Failed(
+                    message = "받을 수 있는 파일이 없습니다. 비공개 게시물이거나 링크가 잘못됐을 수 있습니다.",
                     raw = buildString {
                         appendLine("yt-dlp 가 파일을 하나도 만들지 않았습니다.")
                         appendLine("url=" + url)
                         appendLine("quality=" + quality.name)
                         appendLine("items=" + (playlistItems ?: "(전체)"))
                         appendLine("마지막 상태: " + (DownloadRepo.get(taskId)?.statusLine ?: ""))
-                    }
+                    },
+                    transient = false
                 )
-                return
             }
 
             // 4) 갤러리로 이동
@@ -223,8 +328,11 @@ class DownloadService : Service() {
             val uris = MediaImporter.importAll(this, files, DownloadRepo.get(taskId)?.title)
 
             if (uris.isEmpty()) {
-                fail(taskId, "갤러리에 저장하지 못했습니다. 저장 공간을 확인해 주세요.")
-                return
+                return Outcome.Failed(
+                    message = "갤러리에 저장하지 못했습니다. 저장 공간을 확인해 주세요.",
+                    raw = "파일 " + files.size + "개를 MediaStore 로 옮기지 못했습니다.",
+                    transient = false
+                )
             }
 
             DownloadRepo.update(taskId) {
@@ -235,6 +343,7 @@ class DownloadService : Service() {
                     savedUris = uris,
                     statusLine = "${uris.size}개 저장 완료",
                     error = null,
+                    rawError = null,
                     finishedAt = System.currentTimeMillis()
                 )
             }
@@ -245,17 +354,19 @@ class DownloadService : Service() {
                 text = "${titleForNoti.take(40)} · ${uris.size}개 저장됨\n${MediaImporter.savedLocationText(this)}",
                 success = true
             )
+            return Outcome.Success
         } catch (t: Throwable) {
             val canceled = t.javaClass.simpleName.contains("Canceled", true) ||
                 DownloadRepo.get(taskId)?.state == TaskState.CANCELED
-            if (canceled) {
-                DownloadRepo.update(taskId) {
-                    it.copy(state = TaskState.CANCELED, statusLine = "취소됨")
-                }
-            } else {
-                Log.e(TAG, "download failed", t)
-                fail(taskId, YtDlp.humanizeError(t.message), raw = rawOf(t))
-            }
+            if (canceled) return Outcome.Canceled
+
+            Log.e(TAG, "download failed", t)
+            val raw = rawOf(t)
+            return Outcome.Failed(
+                message = YtDlp.humanizeError(t.message),
+                raw = raw,
+                transient = YtDlp.isTransient(raw)
+            )
         } finally {
             runCatching { workDir.deleteRecursively() }
         }
@@ -322,7 +433,11 @@ class DownloadService : Service() {
         lastPercent = percent
         lastNotifyAt = now
 
-        val notification = Notifications.progress(this, title, text, percent, indeterminate)
+        // 여러 개가 동시에 돌 때는 개별 제목보다 개수가 더 유용하다
+        val active = running.get()
+        val shownTitle = if (active > 1) "다운로드 " + active + "개 진행 중" else title
+
+        val notification = Notifications.progress(this, shownTitle, text, percent, indeterminate)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceCompat.startForeground(
                 this,
@@ -340,6 +455,9 @@ class DownloadService : Service() {
 
     companion object {
         private const val TAG = "DownloadService"
+
+        /** 재시도 대기 시간. 길이가 곧 최대 재시도 횟수 */
+        private val BACKOFF_MS = longArrayOf(15_000L, 60_000L, 180_000L)
 
         const val ACTION_ENQUEUE = "kr.neptune.linksaver.ENQUEUE"
         const val ACTION_CANCEL = "kr.neptune.linksaver.CANCEL"

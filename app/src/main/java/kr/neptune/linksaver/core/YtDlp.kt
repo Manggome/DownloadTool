@@ -549,6 +549,49 @@ object YtDlp {
     fun cancel(processId: String): Boolean =
         runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }.getOrDefault(false)
 
+    /**
+     * 다시 시도하면 결과가 달라질 수 있는 실패인지 판단한다.
+     * 구조적 실패(비공개, 삭제, 미지원)는 몇 번 해도 같으므로 재시도하지 않는다.
+     */
+    fun isTransient(raw: String?): Boolean {
+        val msg = raw.orEmpty()
+        if (msg.isBlank()) return false
+
+        val permanent = listOf(
+            "Unsupported URL",
+            "is private",
+            "private account",
+            "does not exist",
+            "Video unavailable",
+            "No video formats",
+            "No media found",
+            "has been removed",
+            "파일을 하나도 만들지 않았습니다",
+            "MediaStore"
+        )
+        if (permanent.any { msg.contains(it, ignoreCase = true) }) return false
+
+        val transient = listOf(
+            "rate-limit",
+            "rate limit",
+            "429",
+            "Too Many Requests",
+            "403",
+            "Forbidden",
+            "timed out",
+            "timeout",
+            "Unable to download",
+            "Temporary failure",
+            "Connection",
+            "reset by peer",
+            "Remote end closed",
+            "handshake",
+            "login required",
+            "requested content is not available"
+        )
+        return transient.any { msg.contains(it, ignoreCase = true) }
+    }
+
     /** yt-dlp 의 장황한 stderr 를 사람이 읽을 수 있는 한국어로 바꿔준다 */
     fun humanizeError(raw: String?): String {
         val msg = raw.orEmpty()

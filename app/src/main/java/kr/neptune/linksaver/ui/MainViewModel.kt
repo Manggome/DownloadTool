@@ -318,6 +318,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     val albumName: String get() = prefs.albumName
 
+    val maxConcurrent: Int get() = prefs.maxConcurrentDownloads
+
+    fun setMaxConcurrent(value: Int) {
+        prefs.maxConcurrentDownloads = value
+        _toast.value = "동시 다운로드를 " + prefs.maxConcurrentDownloads + "개로 바꿨습니다"
+    }
+
+    val autoRetry: Boolean get() = prefs.autoRetry
+
+    fun setAutoRetry(enabled: Boolean) {
+        prefs.autoRetry = enabled
+    }
+
     fun setAlbumName(value: String) {
         prefs.albumName = value
         _toast.value = "저장 폴더를 " + prefs.albumName + " 로 바꿨습니다"

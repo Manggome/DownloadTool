@@ -390,13 +390,19 @@ object YtDlp {
         ensureInit(context)
         outDir.mkdirs()
 
-        val template = File(outDir, "%(autonumber)03d_%(id)s.%(ext)s").absolutePath
+        // 두 경로가 같은 디렉터리를 쓰면 서로의 결과를 지운다.
+        // 영상(엔진)과 사진(직접 내려받기)을 각자 받아 마지막에 합친다.
+        val mediaDir = File(outDir, "m").apply { mkdirs() }
+        val imageDir = File(outDir, "i").apply { mkdirs() }
+
+        val template = File(mediaDir, "%(autonumber)03d_%(id)s.%(ext)s").absolutePath
         val failures = mutableListOf<Pair<String, String>>()
+        var mediaFiles: List<File> = emptyList()
 
         for (attempt in attempts(context, url)) {
             val label = attempt.label
             // 재시도 전에 직전 시도의 잔여물을 지운다
-            outDir.listFiles()?.forEach { it.delete() }
+            mediaDir.listFiles()?.forEach { it.delete() }
 
             val request = YoutubeDLRequest(url).apply {
                 applyCommon(context, attempt.useCookies)
@@ -421,20 +427,27 @@ object YtDlp {
                 failures += label to (t.message ?: t.javaClass.simpleName)
             }
 
-            val files = outDir.listFiles()
+            val files = mediaDir.listFiles()
                 ?.filter { it.isFile && it.length() > 0L && !it.name.endsWith(".part") }
                 ?.sortedBy { it.name }
                 .orEmpty()
-            if (files.isNotEmpty()) return@withContext files
+            if (files.isNotEmpty()) {
+                mediaFiles = files
+                break
+            }
         }
 
-        // 인스타 사진 게시물 대응.
-        // 추출기가 사진을 formats 가 아니라 thumbnails 에만 넣기 때문에
-        // 일반 경로로는 "No video formats found" 로 끝난다.
-        // 이 경우 썸네일(=원본 이미지)을 직접 파일로 저장한다.
+        // 인스타 사진 대응.
+        // 추출기가 사진을 formats 가 아니라 thumbnails 에만 넣으므로 일반 경로로는
+        // "No video formats found" 로 끝난다. 그래서 이미지 URL 을 직접 받는다.
+        //
+        // 사진과 영상이 섞인 게시물도 있으니, 영상을 받았더라도 사진을 확인한다.
+        // (조회 결과는 캐시되므로 추가 요청은 대개 발생하지 않는다)
         val diag = mutableListOf<String>()
-        val images = downloadImages(context, url, outDir, playlistItems, diag)
-        if (images.isNotEmpty()) return@withContext images
+        val images = downloadImages(context, url, imageDir, playlistItems, diag)
+
+        val all = (mediaFiles + images).sortedBy { it.name }
+        if (all.isNotEmpty()) return@withContext all
 
         if (diag.isNotEmpty()) failures += "이미지 경로" to diag.joinToString(separator = " / ")
         if (failures.isNotEmpty()) throw combineFailures(failures)

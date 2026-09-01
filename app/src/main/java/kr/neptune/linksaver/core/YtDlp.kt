@@ -620,6 +620,48 @@ object YtDlp {
         }
     }
 
+    /**
+     * 웹뷰가 알아낸 미디어 주소를 곧바로 받는다.
+     * 추출기를 타지 않으므로 서명값 문제를 우회할 수 있고,
+     * HLS(.m3u8)면 번들된 ffmpeg 가 조각을 합쳐준다.
+     */
+    suspend fun downloadDirect(
+        context: Context,
+        mediaUrl: String,
+        referer: String,
+        quality: Quality,
+        outDir: File,
+        processId: String,
+        onProgress: (progress: Float, etaSec: Long, line: String) -> Unit
+    ): List<File> = withContext(Dispatchers.IO) {
+        ensureInit(context)
+        outDir.mkdirs()
+
+        val request = YoutubeDLRequest(mediaUrl).apply {
+            applyCommon(context)
+            addOption("--referer", referer)
+            addOption("-o", File(outDir, "%(autonumber)03d_web.%(ext)s").absolutePath)
+            addOption("--newline")
+            addOption("--no-part")
+            if (quality == Quality.AUDIO) {
+                addOption("-x")
+                addOption("--audio-format", "mp3")
+                addOption("--audio-quality", "0")
+            } else {
+                addOption("--merge-output-format", "mp4")
+            }
+        }
+
+        YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
+            onProgress(progress, eta, line)
+        }
+
+        outDir.listFiles()
+            ?.filter { it.isFile && it.length() > 0L && !it.name.endsWith(".part") }
+            ?.sortedBy { it.name }
+            .orEmpty()
+    }
+
     fun cancel(processId: String): Boolean =
         runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }.getOrDefault(false)
 

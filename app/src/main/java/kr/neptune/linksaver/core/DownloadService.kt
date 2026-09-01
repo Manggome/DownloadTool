@@ -285,15 +285,8 @@ class DownloadService : Service() {
             }
 
             val titleForNoti = DownloadRepo.get(taskId)?.title.orEmpty().ifBlank { "다운로드" }
-            val files = YtDlp.download(
-                context = this,
-                url = url,
-                quality = quality,
-                outDir = workDir,
-                processId = taskId,
-                playlistItems = playlistItems,
-                formatId = formatId
-            ) { progress, eta, line ->
+
+            val onProgress: (Float, Long, String) -> Unit = { progress, eta, line ->
                 DownloadRepo.update(taskId) {
                     it.copy(
                         state = TaskState.DOWNLOADING,
@@ -311,17 +304,82 @@ class DownloadService : Service() {
                 )
             }
 
+            var engineRaw: String? = null
+            var files = try {
+                YtDlp.download(
+                    context = this,
+                    url = url,
+                    quality = quality,
+                    outDir = workDir,
+                    processId = taskId,
+                    playlistItems = playlistItems,
+                    formatId = formatId,
+                    onProgress = onProgress
+                )
+            } catch (t: Throwable) {
+                if (isCancellationOf(taskId, t)) return Outcome.Canceled
+                Log.w(TAG, "엔진 실패, 브라우저 경로로 넘어갑니다: " + t.message)
+                engineRaw = rawOf(t)
+                emptyList()
+            }
+
+            // 마지막 수단: 브라우저가 페이지를 실제로 열어 미디어 주소를 알아낸다.
+            // 서명값(X-Bogus 등)을 우리가 만들지 않고 브라우저에 맡기는 것이 요점.
+            var webDiag: List<String> = emptyList()
             if (files.isEmpty()) {
+                DownloadRepo.update(taskId) {
+                    it.copy(
+                        state = TaskState.DOWNLOADING,
+                        progress = 0f,
+                        statusLine = "브라우저로 다시 시도 중…"
+                    )
+                }
+                promote(titleForNoti, "브라우저로 다시 시도 중…", 0, true)
+
+                val web = runCatching { WebViewExtractor.extract(this, url) }.getOrNull()
+                webDiag = web?.diag ?: listOf("브라우저 추출을 시작하지 못했습니다")
+
+                val best = web?.best
+                if (best != null) {
+                    val webDir = File(workDir, "w").apply { mkdirs() }
+                    files = runCatching {
+                        YtDlp.downloadDirect(
+                            context = this,
+                            mediaUrl = best,
+                            referer = web.pageUrl,
+                            quality = quality,
+                            outDir = webDir,
+                            processId = taskId,
+                            onProgress = onProgress
+                        )
+                    }.onFailure { t ->
+                        if (isCancellationOf(taskId, t)) return Outcome.Canceled
+                        webDiag = webDiag + ("직접 받기 실패: " + (t.message ?: t.javaClass.simpleName))
+                    }.getOrDefault(emptyList())
+                }
+            }
+
+            if (files.isEmpty()) {
+                val raw = buildString {
+                    appendLine("url=" + url)
+                    appendLine("quality=" + quality.name)
+                    appendLine("items=" + (playlistItems ?: "(전체)"))
+                    if (engineRaw != null) {
+                        appendLine()
+                        appendLine("=========== 엔진(yt-dlp) ===========")
+                        appendLine(engineRaw)
+                    }
+                    if (webDiag.isNotEmpty()) {
+                        appendLine()
+                        appendLine("=========== 브라우저 경로 ===========")
+                        webDiag.forEach { appendLine(it) }
+                    }
+                }
                 return Outcome.Failed(
-                    message = "받을 수 있는 파일이 없습니다. 비공개 게시물이거나 링크가 잘못됐을 수 있습니다.",
-                    raw = buildString {
-                        appendLine("yt-dlp 가 파일을 하나도 만들지 않았습니다.")
-                        appendLine("url=" + url)
-                        appendLine("quality=" + quality.name)
-                        appendLine("items=" + (playlistItems ?: "(전체)"))
-                        appendLine("마지막 상태: " + (DownloadRepo.get(taskId)?.statusLine ?: ""))
-                    },
-                    transient = false
+                    message = if (engineRaw != null) YtDlp.humanizeError(engineRaw)
+                    else "받을 수 있는 파일이 없습니다. 비공개 게시물이거나 링크가 잘못됐을 수 있습니다.",
+                    raw = raw,
+                    transient = YtDlp.isTransient(engineRaw)
                 )
             }
 
@@ -377,6 +435,12 @@ class DownloadService : Service() {
             runCatching { workDir.deleteRecursively() }
         }
     }
+
+    /** 사용자가 취소한 것인지 판정 */
+    private fun isCancellationOf(taskId: String, t: Throwable): Boolean =
+        t.javaClass.simpleName.contains("Canceled", true) ||
+            t is InterruptedException ||
+            DownloadRepo.get(taskId)?.state == TaskState.CANCELED
 
     private fun fail(taskId: String, message: String, raw: String? = null) {
         DownloadRepo.update(taskId) {
